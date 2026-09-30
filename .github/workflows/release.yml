@@ -15,18 +15,28 @@ jobs:
       - name: Toolchain
         run: swift --version
 
-      - name: Build (universal release, Intel + Apple Silicon)
-        run: swift build -c release --arch arm64 --arch x86_64
+      - name: Build
+        run: swift build
 
       - name: Verify checks
-        run: swift run -c release PDFReaderVerify
+        run: swift run PDFReaderVerify
 
       - name: Unit tests
         run: swift test
 
+      - name: Build universal binary (Intel + Apple Silicon)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          swift build -c release --arch arm64 --product PDFReader --scratch-path .build/arm64
+          swift build -c release --arch x86_64 --product PDFReader --scratch-path .build/x86_64
+          mkdir -p .build/universal
+          lipo -create .build/arm64/release/PDFReader .build/x86_64/release/PDFReader -output .build/universal/PDFReader
+          chmod +x .build/universal/PDFReader
+          lipo -info .build/universal/PDFReader
+
       - name: Package app bundle
         if: startsWith(github.ref, 'refs/tags/v')
-        run: ./scripts/make-app.sh release
+        run: APP_BINARY=.build/universal/PDFReader ./scripts/make-app.sh release
 
       - name: Build DMG
         if: startsWith(github.ref, 'refs/tags/v')

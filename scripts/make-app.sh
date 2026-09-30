@@ -7,18 +7,25 @@
 #
 # Usage:
 #   scripts/make-app.sh [debug|release]   # default: debug
+#   APP_BINARY=.build/universal/PDFReader scripts/make-app.sh release
 #   open .build/app/PDFReader.app
+#
+# APP_BINARY packages a prebuilt binary instead of building (used by CI to
+# embed a lipo-combined universal binary).
 set -eu
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
 APP_DIR=".build/app/PDFReader.app"
-BIN=".build/debug/PDFReader"
-if [ "$CONFIG" = "release" ]; then
-    BIN=".build/release/PDFReader"
+if [ -n "${APP_BINARY:-}" ]; then
+    BIN="$APP_BINARY"
+else
+    swift build -c "$CONFIG" --product PDFReader
+    BIN=".build/debug/PDFReader"
+    if [ "$CONFIG" = "release" ]; then
+        BIN=".build/release/PDFReader"
+    fi
 fi
-
-swift build -c "$CONFIG" --product PDFReader
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
