@@ -1,0 +1,44 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:PDFReader}",
+      "name": "Debug PDFReaderVerify",
+      "target": "PDFReaderVerify",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug PDFReaderVerify"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:PDFReader}",
+      "name": "Release PDFReaderVerify",
+      "target": "PDFReaderVerify",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release PDFReaderVerify"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:PDFReader}",
+      "name": "Debug PDFReader",
+      "target": "PDFReader",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug PDFReader"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:PDFReader}",
+      "name": "Release PDFReader",
+      "target": "PDFReader",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release PDFReader"
+    }
+  ]
+}
