@@ -1,5 +1,7 @@
 # PDFReader for Mac
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
 Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
 (no Xcode project required — builds with `swift build` / `swift run`).
 
@@ -94,3 +96,12 @@ Sources/PDFReader/
   in Preview / other readers.
 - Night mode darkens the window + viewer background. True per-page
   dark rendering would need custom page drawing — left for v2.
+
+## License
+
+Copyright (c) 2026 Marvelous Akpotu.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, version 3. See [LICENSE](LICENSE) for the full
+text — distributed modifications must stay under the GPL.
