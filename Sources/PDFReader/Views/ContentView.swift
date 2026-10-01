@@ -8,6 +8,7 @@ public struct ContentView: View {
     @StateObject private var bookmarks = BookmarkStore()
     @StateObject private var recents = RecentFilesStore()
     @State private var sidebarTab: SidebarTab = .outline
+    @Environment(\.openWindow) private var openWindow
     @State private var showingSidebar = true
     @State private var sidebarWidth: CGFloat = 280
     @State private var hoveringDivider = false
@@ -29,8 +30,8 @@ public struct ContentView: View {
                     welcomeView
                 } else {
                     PDFKitView(state: state)
-                        .colorInvertIfActive(state.nightMode)
-                        .background(state.nightMode ? Color.black : Color(nsColor: .windowBackgroundColor))
+                        .colorInvertIfActive(state.usesDarkPages)
+                        .background(state.usesDarkPages ? Color.black : state.appTheme.windowBackground)
                 }
                 statusBar
             }
@@ -119,12 +120,23 @@ public struct ContentView: View {
                     .help("Bookmark this page")
                     .disabled(state.document == nil)
 
-                    Button {
-                        state.nightMode.toggle()
+                    Menu {
+                        ForEach(AppTheme.allCases) { theme in
+                            Button {
+                                state.appTheme = theme
+                            } label: {
+                                if state.appTheme == theme {
+                                    Label(theme.displayName, systemImage: "checkmark")
+                                } else {
+                                    Label(theme.displayName, systemImage: theme.symbolName)
+                                }
+                            }
+                            .help(theme.tooltip)
+                        }
                     } label: {
-                        Label("Night", systemImage: state.nightMode ? "moon.fill" : "moon")
+                        Label("Theme", systemImage: state.appTheme.symbolName)
                     }
-                    .help("Toggle night mode (dark pages)")
+                    .help("Appearance theme: \(state.appTheme.displayName) — \(state.appTheme.tooltip)")
 
                     Button {
                         toggleFullScreen()
@@ -161,9 +173,11 @@ public struct ContentView: View {
         .onChange(of: state.highlightColor) { _, _ in
             state.applyToCurrentSelectionIfPresent()
         }
-        .preferredColorScheme(state.nightMode ? .dark : nil)
+        .preferredColorScheme(state.appTheme.preferredColorScheme)
+        .tint(state.appTheme.accent)
         .frame(minWidth: 900, minHeight: 600)
         .onAppear {
+            AboutWindow.open = { openWindow(id: "about") }
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`
             if let sample = ProcessInfo.processInfo.environment["PDFREADER_SAMPLE"] {
                 let url = URL(fileURLWithPath: sample)
@@ -257,11 +271,11 @@ public struct ContentView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .background(state.appTheme.chromeBackground, in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(state.appTheme.windowBackground)
     }
 
     private var statusBar: some View {
@@ -283,7 +297,7 @@ public struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(state.appTheme.chromeBackground)
     }
 
     private var pageNavigation: some View {

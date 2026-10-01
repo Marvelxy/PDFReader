@@ -122,8 +122,36 @@ public final class PDFReaderState: ObservableObject {
         highlightColor == .custom ? Color(customHighlightColor) : highlightColor.swiftUIColor
     }
 
-    @Published public var nightMode: Bool = false
     @Published public var statusMessage: String = "Open a PDF to get started."
+
+    // MARK: - Appearance theme
+
+    @Published public var appTheme: AppTheme = .system {
+        didSet { saveTheme() }
+    }
+
+    /// Thumbnail (Pages tab) zoom factor. 1.0 = 72x96pt, clamped 0.5...5.0.
+    @Published public var thumbnailScale: CGFloat = 1.0 {
+        didSet {
+            let clamped = min(5.0, max(0.5, thumbnailScale))
+            if clamped != thumbnailScale {
+                // Terminates: re-entry sees clamped == value, so no second
+                // assignment fires the observer again.
+                thumbnailScale = clamped
+            }
+            saveTheme()
+        }
+    }
+
+    /// Whether pages should render dark (color-inverted).
+    public var usesDarkPages: Bool { appTheme.invertsPages }
+
+    /// Legacy alias — use `appTheme` instead. Kept so old call sites compile.
+    @available(*, deprecated, message: "Use appTheme instead")
+    public var nightMode: Bool {
+        get { appTheme.invertsPages }
+        set { appTheme = newValue ? .dark : .light }
+    }
 
     /// Weak link to the live PDFView so state mutations can drive navigation.
     /// Set by `PDFKitView.Coordinator` on creation.
@@ -175,12 +203,15 @@ public final class PDFReaderState: ObservableObject {
     private static let highlightColorKey = "com.pdfreader.highlightColor.v1"
     private static let customColorKey = "com.pdfreader.highlightCustomColor.v1"
     private static let favoritesKey = "com.pdfreader.highlightFavorites.v1"
+    private static let themeKey = "com.pdfreader.appTheme.v1"
+    private static let thumbnailScaleKey = "com.pdfreader.thumbnailScale.v1"
     /// While loading, assignments must not save back mid-load (the choice
     /// restores before the custom value, which would clobber it).
     private var loadingPrefs = false
 
     public init() {
         loadHighlightPrefs()
+        loadThemePrefs()
     }
 
     private func saveHighlightPrefs() {
@@ -220,6 +251,45 @@ public final class PDFReaderState: ObservableObject {
                 favoriteColors = list
             }
         }
+    }
+
+    private var loadingTheme = false
+
+    private func saveTheme() {
+        guard !loadingTheme else { return }
+        UserDefaults.standard.set(appTheme.rawValue, forKey: Self.themeKey)
+        UserDefaults.standard.set(Double(thumbnailScale), forKey: Self.thumbnailScaleKey)
+    }
+
+    private func loadThemePrefs() {
+        loadingTheme = true
+        defer { loadingTheme = false }
+        if let raw = UserDefaults.standard.string(forKey: Self.themeKey),
+           let saved = AppTheme(rawValue: raw)
+        {
+            appTheme = saved
+        }
+        let scale = UserDefaults.standard.double(forKey: Self.thumbnailScaleKey)
+        if scale >= 0.5, scale <= 5.0, scale != 0 {
+            thumbnailScale = CGFloat(scale)
+        }
+        // One-time migration: an enabled legacy night mode becomes Dark.
+        if UserDefaults.standard.bool(forKey: "com.pdfreader.nightMode.v1"), appTheme == .system {
+            appTheme = .dark
+        }
+    }
+
+    /// Zoom helpers for the Pages (thumbnails) tab.
+    public func zoomThumbnailsIn() {
+        thumbnailScale = min(5.0, thumbnailScale + 0.25)
+    }
+
+    public func zoomThumbnailsOut() {
+        thumbnailScale = max(0.5, thumbnailScale - 0.25)
+    }
+
+    public func resetThumbnailZoom() {
+        thumbnailScale = 1.0
     }
 
     // MARK: - Opening

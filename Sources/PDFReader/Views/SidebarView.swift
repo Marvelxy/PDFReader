@@ -29,12 +29,28 @@ public enum SidebarTab: String, CaseIterable, Identifiable {
         case .annotations: return "note.text"
         }
     }
+
+    public var tooltip: String {
+        switch self {
+        case .thumbnails: return "Pages — thumbnails (zoomable)"
+        case .outline: return "Contents — table of contents"
+        case .search: return "Search in document"
+        case .bookmarks: return "Bookmarks for this file"
+        case .annotations: return "Notes — annotations list"
+        }
+    }
 }
 
 public struct SidebarView: View {
     @ObservedObject var state: PDFReaderState
     @ObservedObject var bookmarks: BookmarkStore
     @Binding var tab: SidebarTab
+    /// Draft slider value while the thumbnail zoom slider is being dragged.
+    /// While non-nil the expensive `state.thumbnailScale` commit (which forces
+    /// `PDFThumbnailView` to re-render every thumbnail) is deferred until
+    /// drag end — dragging otherwise floods the main thread with full
+    /// thumbnail reloads and freezes the app with no recovery on large docs.
+    @State private var thumbZoomDraft: Double?
 
     public init(state: PDFReaderState, bookmarks: BookmarkStore, tab: Binding<SidebarTab>) {
         self.state = state
@@ -44,13 +60,27 @@ public struct SidebarView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            Picker("Sidebar", selection: $tab) {
+            // Icon-only tab bar with tooltips (accessibility labels = titles).
+            HStack(spacing: 2) {
                 ForEach(SidebarTab.allCases) { t in
-                    Label(t.title, systemImage: t.symbol).tag(t)
+                    Button {
+                        tab = t
+                    } label: {
+                        Image(systemName: t.symbol)
+                            .font(.system(size: 14, weight: tab == t ? .semibold : .regular))
+                            .foregroundStyle(tab == t ? Color.accentColor : Color.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                            .background(
+                                tab == t ? Color.accentColor.opacity(0.15) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(t.tooltip)
+                    .accessibilityLabel(t.title)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .padding(8)
 
             Divider()
@@ -72,9 +102,87 @@ public struct SidebarView: View {
 
     // MARK: - Tabs
 
+    /// Scale shown in the zoom bar: live draft while dragging, else committed.
+    private var thumbDisplayScale: CGFloat {
+        if let draft = thumbZoomDraft {
+            return CGFloat(draft)
+        }
+        return state.thumbnailScale
+    }
+
+    private var thumbSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                if let draft = thumbZoomDraft { return draft }
+                return Double(state.thumbnailScale)
+            },
+            set: { thumbZoomDraft = $0 }
+        )
+    }
+
+    private func commitThumbDraft() {
+        if let draft = thumbZoomDraft {
+            thumbZoomDraft = nil
+            state.thumbnailScale = CGFloat(draft)
+        }
+    }
+
+    private var thumbnailZoomBar: some View {
+        // The slider edits a local draft while dragging and commits to
+        // `state.thumbnailScale` only on release: committing live would
+        // ask PDFThumbnailView to re-render all thumbnails on every tick
+        // and lock up the main thread on large documents.
+        HStack(spacing: 6) {
+            Button {
+                thumbZoomDraft = nil
+                state.zoomThumbnailsOut()
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.plain)
+            .help("Zoom thumbnails out")
+            .disabled(state.thumbnailScale <= 0.5)
+
+            Slider(
+                value: thumbSliderBinding,
+                in: 0.5 ... 5.0,
+                step: 0.25
+            ) { editing in
+                if !editing { commitThumbDraft() }
+            }
+            .help("Thumbnail zoom (\(Int(thumbDisplayScale * 100))% — double-click to reset)")
+            .onTapGesture(count: 2) {
+                thumbZoomDraft = nil
+                state.resetThumbnailZoom()
+            }
+
+            Button {
+                thumbZoomDraft = nil
+                state.zoomThumbnailsIn()
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.plain)
+            .help("Zoom thumbnails in")
+            .disabled(state.thumbnailScale >= 5.0)
+
+            Text("\(Int(thumbDisplayScale * 100))%")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .trailing)
+                .help("Thumbnail zoom — double-click slider to reset to 100%")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+
     private var thumbnailsTab: some View {
-        PDFThumbnailStrip(state: state)
-            .padding(4)
+        VStack(spacing: 0) {
+            thumbnailZoomBar
+            Divider()
+            PDFThumbnailStrip(state: state)
+                .padding(4)
+        }
     }
 
     private var outlineTab: some View {
