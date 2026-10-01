@@ -14,6 +14,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Toolchain
         run: swift --version
@@ -39,7 +41,7 @@ jobs:
 
       - name: Package app bundle
         if: startsWith(github.ref, 'refs/tags/v')
-        run: APP_BINARY=.build/universal/PDFReader ./scripts/make-app.sh release
+        run: APP_BINARY=.build/universal/PDFReader APP_VERSION="${GITHUB_REF_NAME}" APP_BUILD="${GITHUB_RUN_NUMBER}" ./scripts/make-app.sh release
 
       - name: Build DMG
         if: startsWith(github.ref, 'refs/tags/v')

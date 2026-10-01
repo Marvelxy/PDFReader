@@ -16,6 +16,13 @@ set -eu
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-debug}"
+
+# Version comes from APP_VERSION (CI sets the GitHub tag) or `git describe`,
+# so the running app matches the GitHub release/tag it was built from.
+GIT_DESCRIBE="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+APP_VERSION="${APP_VERSION:-$GIT_DESCRIBE}"
+APP_VERSION="${APP_VERSION#v}"
+APP_BUILD="${APP_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP_DIR=".build/app/PDFReader.app"
 if [ -n "${APP_BINARY:-}" ]; then
     BIN="$APP_BINARY"
@@ -49,9 +56,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>__VERSION__</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>__BUILD__</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>CFBundleIconFile</key>
@@ -61,6 +68,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+sed -i '' -e "s|__VERSION__|$APP_VERSION|" -e "s|__BUILD__|$APP_BUILD|" "$APP_DIR/Contents/Info.plist"
 
 codesign --force --deep --sign - "$APP_DIR"
 echo "Built $APP_DIR"

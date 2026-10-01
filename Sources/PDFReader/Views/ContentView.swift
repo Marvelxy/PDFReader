@@ -8,6 +8,7 @@ public struct ContentView: View {
     @StateObject private var bookmarks = BookmarkStore()
     @StateObject private var recents = RecentFilesStore()
     @State private var sidebarTab: SidebarTab = .outline
+    @Environment(\.openWindow) private var openWindow
     @State private var showingSidebar = true
     @State private var sidebarWidth: CGFloat = 280
     @State private var hoveringDivider = false
@@ -176,6 +177,7 @@ public struct ContentView: View {
         .tint(state.appTheme.accent)
         .frame(minWidth: 900, minHeight: 600)
         .onAppear {
+            AboutWindow.open = { openWindow(id: "about") }
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`
             if let sample = ProcessInfo.processInfo.environment["PDFREADER_SAMPLE"] {
                 let url = URL(fileURLWithPath: sample)
