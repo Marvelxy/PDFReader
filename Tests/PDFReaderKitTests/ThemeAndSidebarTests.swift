@@ -40,7 +40,7 @@ final class ThemeAndSidebarTests: XCTestCase {
     func testThumbnailZoomClampsAndHelpers() {
         let state = PDFReaderState()
         state.thumbnailScale = 10
-        XCTAssertEqual(state.thumbnailScale, 3.0)
+        XCTAssertEqual(state.thumbnailScale, 5.0)
         state.thumbnailScale = 0.1
         XCTAssertEqual(state.thumbnailScale, 0.5)
         state.resetThumbnailZoom()

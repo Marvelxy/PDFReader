@@ -130,10 +130,10 @@ public final class PDFReaderState: ObservableObject {
         didSet { saveTheme() }
     }
 
-    /// Thumbnail (Pages tab) zoom factor. 1.0 = 72x96pt, clamped 0.5...3.0.
+    /// Thumbnail (Pages tab) zoom factor. 1.0 = 72x96pt, clamped 0.5...5.0.
     @Published public var thumbnailScale: CGFloat = 1.0 {
         didSet {
-            let clamped = min(3.0, max(0.5, thumbnailScale))
+            let clamped = min(5.0, max(0.5, thumbnailScale))
             if clamped != thumbnailScale {
                 // Terminates: re-entry sees clamped == value, so no second
                 // assignment fires the observer again.
@@ -270,7 +270,7 @@ public final class PDFReaderState: ObservableObject {
             appTheme = saved
         }
         let scale = UserDefaults.standard.double(forKey: Self.thumbnailScaleKey)
-        if scale >= 0.5, scale <= 3.0, scale != 0 {
+        if scale >= 0.5, scale <= 5.0, scale != 0 {
             thumbnailScale = CGFloat(scale)
         }
         // One-time migration: an enabled legacy night mode becomes Dark.
@@ -281,7 +281,7 @@ public final class PDFReaderState: ObservableObject {
 
     /// Zoom helpers for the Pages (thumbnails) tab.
     public func zoomThumbnailsIn() {
-        thumbnailScale = min(3.0, thumbnailScale + 0.25)
+        thumbnailScale = min(5.0, thumbnailScale + 0.25)
     }
 
     public func zoomThumbnailsOut() {

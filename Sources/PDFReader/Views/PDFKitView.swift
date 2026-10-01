@@ -106,7 +106,7 @@ public struct PDFKitView: NSViewRepresentable {
 
 /// Thumbnail strip used in the sidebar. Separate representable because
 /// `PDFThumbnailView` must share the same `PDFView` instance.
-/// Thumbnail size follows `state.thumbnailScale` (0.5...3.0, 1.0 = 72x96).
+/// Thumbnail size follows `state.thumbnailScale` (0.5...5.0, 1.0 = 72x96).
 public struct PDFThumbnailStrip: NSViewRepresentable {
     @ObservedObject public var state: PDFReaderState
 
@@ -159,7 +159,7 @@ public struct PDFThumbnailStrip: NSViewRepresentable {
     }
 
     private func scaledThumbnailSize(for scale: CGFloat) -> NSSize {
-        let clamped = min(3.0, max(0.5, scale))
+        let clamped = min(5.0, max(0.5, scale))
         return NSSize(width: 72 * clamped, height: 96 * clamped)
     }
 }

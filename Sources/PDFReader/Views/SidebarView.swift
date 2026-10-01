@@ -145,7 +145,7 @@ public struct SidebarView: View {
 
             Slider(
                 value: thumbSliderBinding,
-                in: 0.5 ... 3.0,
+                in: 0.5 ... 5.0,
                 step: 0.25
             ) { editing in
                 if !editing { commitThumbDraft() }
@@ -164,7 +164,7 @@ public struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Zoom thumbnails in")
-            .disabled(state.thumbnailScale >= 3.0)
+            .disabled(state.thumbnailScale >= 5.0)
 
             Text("\(Int(thumbDisplayScale * 100))%")
                 .font(.caption)
