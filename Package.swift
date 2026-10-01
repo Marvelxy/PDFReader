@@ -18,6 +18,7 @@ let package = Package(
             name: "PDFReader",
             dependencies: ["PDFReaderKit"],
             path: "Sources/PDFReader",
+            exclude: ["Resources"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ]

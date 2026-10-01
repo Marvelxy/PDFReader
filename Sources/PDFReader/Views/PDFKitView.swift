@@ -21,10 +21,10 @@ public struct PDFKitView: NSViewRepresentable {
         pdfView.displaysPageBreaks = true
         pdfView.displayBox = .mediaBox
         // Keep the pre-invert color light: ContentView applies
-        // `.colorInvert()` in night mode, turning this + white pages dark.
+        // `.colorInvert()` in dark themes, turning this + white pages dark.
         // Must be a fixed light color (semantic colors resolve dark under
         // `.preferredColorScheme(.dark)` and would invert back to light).
-        pdfView.backgroundColor = state.nightMode ? .white : .windowBackgroundColor
+        pdfView.backgroundColor = state.usesDarkPages ? .white : .windowBackgroundColor
         pdfView.document = state.document
         state.pdfView = pdfView
 
@@ -54,8 +54,8 @@ public struct PDFKitView: NSViewRepresentable {
             pdfView.document = state.document
         }
         state.applyLayoutToView(pdfView)
-        // See makeNSView: white pre-invert -> black post-invert in night mode.
-        pdfView.backgroundColor = state.nightMode ? .white : .windowBackgroundColor
+        // See makeNSView: white pre-invert -> black post-invert in dark themes.
+        pdfView.backgroundColor = state.usesDarkPages ? .white : .windowBackgroundColor
 
         // Keep the visible page in sync when sidebar/search drives navigation.
         if let doc = state.document,
@@ -106,6 +106,7 @@ public struct PDFKitView: NSViewRepresentable {
 
 /// Thumbnail strip used in the sidebar. Separate representable because
 /// `PDFThumbnailView` must share the same `PDFView` instance.
+/// Thumbnail size follows `state.thumbnailScale` (0.5...3.0, 1.0 = 72x96).
 public struct PDFThumbnailStrip: NSViewRepresentable {
     @ObservedObject public var state: PDFReaderState
 
@@ -115,7 +116,7 @@ public struct PDFThumbnailStrip: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> PDFThumbnailView {
         let thumbs = PDFThumbnailView()
-        thumbs.thumbnailSize = NSSize(width: 72, height: 96)
+        thumbs.thumbnailSize = scaledThumbnailSize(for: state.thumbnailScale)
         thumbs.backgroundColor = .clear
         return thumbs
     }
@@ -124,5 +125,41 @@ public struct PDFThumbnailStrip: NSViewRepresentable {
         if thumbs.pdfView !== state.pdfView {
             thumbs.pdfView = state.pdfView
         }
+        let want = scaledThumbnailSize(for: state.thumbnailScale)
+        if thumbs.thumbnailSize != want {
+            // Debounce: resizing thumbnails re-renders every page's thumbnail
+            // synchronously on the main thread. Rapid successive changes
+            // (slider drags, repeated +/- taps) would queue overlapping
+            // reloads and freeze the app with no recovery on large docs, so
+            // only the settled size is applied.
+            context.coordinator.scheduleThumbnailResize(thumbs, to: want)
+        }
+    }
+
+    public func makeCoordinator() -> ThumbnailCoordinator {
+        ThumbnailCoordinator()
+    }
+
+    /// Coalesces rapid `thumbnailSize` changes so only the latest settled
+    /// value hits `PDFThumbnailView` (which re-renders synchronously).
+    public final class ThumbnailCoordinator: NSObject {
+        private var pending: DispatchWorkItem?
+
+        func scheduleThumbnailResize(_ view: PDFThumbnailView, to size: NSSize) {
+            pending?.cancel()
+            let work = DispatchWorkItem { [weak view] in
+                guard let view else { return }
+                if view.thumbnailSize != size {
+                    view.thumbnailSize = size
+                }
+            }
+            pending = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        }
+    }
+
+    private func scaledThumbnailSize(for scale: CGFloat) -> NSSize {
+        let clamped = min(3.0, max(0.5, scale))
+        return NSSize(width: 72 * clamped, height: 96 * clamped)
     }
 }

@@ -73,6 +73,12 @@ swift run PDFReaderVerify   # headless checks, works with Command Line Tools
 swift test                  # XCTest suite, requires full Xcode
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, branch workflow,
+verification (`swift build` / `swift run PDFReaderVerify` / `swift test`),
+and code conventions.
+
 ## Project layout
 
 ```
