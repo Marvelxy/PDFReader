@@ -20,8 +20,8 @@ struct AboutView: View {
             Text("Version \(version) (\(build))")
                 .foregroundStyle(.secondary)
             Divider().frame(maxWidth: 280)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("By Marvelus Akpotu")
+            VStack(alignment: .center, spacing: 6) {
+                Text("By Marvelous Akpotu")
                 Link(
                     "still4marvelous@gmail.com",
                     destination: URL(string: "mailto:still4marvelous@gmail.com")!)

@@ -205,6 +205,8 @@ public final class PDFReaderState: ObservableObject {
     private static let favoritesKey = "com.pdfreader.highlightFavorites.v1"
     private static let themeKey = "com.pdfreader.appTheme.v1"
     private static let thumbnailScaleKey = "com.pdfreader.thumbnailScale.v1"
+    private static let remembersPositionKey = "com.pdfreader.remembersLastPosition.v1"
+    private static let lastPositionsKey = "com.pdfreader.lastPositions.v1"
     /// While loading, assignments must not save back mid-load (the choice
     /// restores before the custom value, which would clobber it).
     private var loadingPrefs = false
@@ -300,21 +302,51 @@ public final class PDFReaderState: ObservableObject {
             statusMessage = "Could not open \(url.lastPathComponent)."
             return false
         }
+        // Stash where we were in the previous file before replacing it.
+        saveLastPosition()
         document = doc
         fileURL = url
         pageCount = doc.pageCount
-        currentPageIndex = 0
         searchHits = []
         searchQuery = ""
         rebuildOutline()
         refreshAnnotations()
         undoStack.removeAll()
         redoStack.removeAll()
+        let saved = restoreLastPositionIndex() ?? 0
+        currentPageIndex = saved
         statusMessage = "\(url.lastPathComponent) — \(doc.pageCount) pages"
-        if let page = doc.page(at: 0) {
+        if let page = doc.page(at: saved) {
             pdfView?.go(to: page)
         }
         return true
+    }
+
+    // MARK: - Last reading position
+
+    /// Whether per-file last page is remembered. Defaults to on.
+    public var remembersLastPosition: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.remembersPositionKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.remembersPositionKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Self.remembersPositionKey) }
+    }
+
+    private func saveLastPosition() {
+        guard remembersLastPosition, document != nil, let url = fileURL else { return }
+        var all = UserDefaults.standard.dictionary(forKey: Self.lastPositionsKey) as? [String: Int] ?? [:]
+        all[url.path] = currentPageIndex
+        UserDefaults.standard.set(all, forKey: Self.lastPositionsKey)
+    }
+
+    private func restoreLastPositionIndex() -> Int? {
+        guard remembersLastPosition, let url = fileURL else { return nil }
+        let all = UserDefaults.standard.dictionary(forKey: Self.lastPositionsKey) as? [String: Int]
+        guard let idx = all?[url.path] else { return nil }
+        return max(0, min(idx, max(0, pageCount - 1)))
     }
 
     // MARK: - Navigation
@@ -323,6 +355,7 @@ public final class PDFReaderState: ObservableObject {
         guard let doc = document, pageCount > 0 else { return }
         let clamped = max(0, min(index, pageCount - 1))
         currentPageIndex = clamped
+        saveLastPosition()
         if viaView, let page = doc.page(at: clamped) {
             pdfView?.go(to: page)
         }
@@ -343,6 +376,7 @@ public final class PDFReaderState: ObservableObject {
         else { return }
         if index != currentPageIndex {
             currentPageIndex = index
+            saveLastPosition()
         }
         if view.scaleFactor != scaleFactor {
             scaleFactor = view.scaleFactor
