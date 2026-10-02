@@ -45,12 +45,6 @@ public struct SidebarView: View {
     @ObservedObject var state: PDFReaderState
     @ObservedObject var bookmarks: BookmarkStore
     @Binding var tab: SidebarTab
-    /// Draft slider value while the thumbnail zoom slider is being dragged.
-    /// While non-nil the expensive `state.thumbnailScale` commit (which forces
-    /// `PDFThumbnailView` to re-render every thumbnail) is deferred until
-    /// drag end — dragging otherwise floods the main thread with full
-    /// thumbnail reloads and freezes the app with no recovery on large docs.
-    @State private var thumbZoomDraft: Double?
 
     public init(state: PDFReaderState, bookmarks: BookmarkStore, tab: Binding<SidebarTab>) {
         self.state = state
@@ -102,39 +96,20 @@ public struct SidebarView: View {
 
     // MARK: - Tabs
 
-    /// Scale shown in the zoom bar: live draft while dragging, else committed.
-    private var thumbDisplayScale: CGFloat {
-        if let draft = thumbZoomDraft {
-            return CGFloat(draft)
-        }
-        return state.thumbnailScale
-    }
+    private var thumbDisplayScale: CGFloat { state.thumbnailScale }
 
+    /// Slider binds straight to `state.thumbnailScale` so the zoom applies
+    /// live while dragging.
     private var thumbSliderBinding: Binding<Double> {
         Binding(
-            get: {
-                if let draft = thumbZoomDraft { return draft }
-                return Double(state.thumbnailScale)
-            },
-            set: { thumbZoomDraft = $0 }
+            get: { Double(state.thumbnailScale) },
+            set: { state.thumbnailScale = CGFloat($0) }
         )
     }
 
-    private func commitThumbDraft() {
-        if let draft = thumbZoomDraft {
-            thumbZoomDraft = nil
-            state.thumbnailScale = CGFloat(draft)
-        }
-    }
-
     private var thumbnailZoomBar: some View {
-        // The slider edits a local draft while dragging and commits to
-        // `state.thumbnailScale` only on release: committing live would
-        // ask PDFThumbnailView to re-render all thumbnails on every tick
-        // and lock up the main thread on large documents.
         HStack(spacing: 6) {
             Button {
-                thumbZoomDraft = nil
                 state.zoomThumbnailsOut()
             } label: {
                 Image(systemName: "minus.magnifyingglass")
@@ -147,17 +122,13 @@ public struct SidebarView: View {
                 value: thumbSliderBinding,
                 in: 0.5 ... 5.0,
                 step: 0.25
-            ) { editing in
-                if !editing { commitThumbDraft() }
-            }
+            )
             .help("Thumbnail zoom (\(Int(thumbDisplayScale * 100))% — double-click to reset)")
             .onTapGesture(count: 2) {
-                thumbZoomDraft = nil
                 state.resetThumbnailZoom()
             }
 
             Button {
-                thumbZoomDraft = nil
                 state.zoomThumbnailsIn()
             } label: {
                 Image(systemName: "plus.magnifyingglass")
