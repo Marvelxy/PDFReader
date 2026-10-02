@@ -27,6 +27,12 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
   files are reported and dropped on open.
 - **Reading modes** — layout menu, book mode, RTL, night background,
   presentation (full-screen).
+- **Settings** — ⌘, opens Settings; toggle "Remember where I left off
+  in each file" (on by default) to control last-position restore.
+- **Updates** — Help → Check for Updates… compares the build's version
+  against the latest GitHub release and offers the DMG download.
+- **Themes** — system / light / dark / sepia-style page themes from the
+  toolbar; preference is persisted.
 
 ## Requirements
 
@@ -92,6 +98,29 @@ Sources/PDFReader/
     ContentView.swift     # split view, toolbar, status bar
     PDFKitView.swift      # PDFView + PDFThumbnailView bridges
     SidebarView.swift     # pages / contents / search / bookmarks / notes
+    AboutView.swift       # App menu → About
+    SettingsView.swift    # App menu → Settings… (⌘,)
+    Services/UpdateChecker.swift  # Help → Check for Updates…
+```
+
+## Releasing
+
+Releases are cut from version tags:
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+CI builds the universal binary + DMG, stamps the app version from the tag
+(`CFBundleShortVersionString`), and creates the GitHub release. Don't
+create the GitHub release manually first — `gh release create` in CI
+fails if one with the same tag name already exists.
+
+If `git push` fails mid-upload of the icon resources with
+`send-pack: unexpected disconnect`, raise the HTTP post buffer:
+
+```sh
+git config http.postBuffer 524288000
 ```
 
 ## Notes
