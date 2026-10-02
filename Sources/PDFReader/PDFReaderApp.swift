@@ -21,13 +21,11 @@ struct PDFReaderApp: App {
             CommandGroup(replacing: .textEditing) { EmptyView() }
             CommandGroup(replacing: .appInfo) {
                 Button("About PDFReader") { AboutWindow.open?() }
+                Button("Check for Updates…") { UpdateChecker.check() }
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { SettingsWindow.open?() }
                     .keyboardShortcut(",", modifiers: .command)
-            }
-            CommandGroup(after: .help) {
-                Button("Check for Updates…") { UpdateChecker.check() }
             }
         }
 
