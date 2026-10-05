@@ -36,7 +36,9 @@ enum UpdateChecker {
                         alert.addButton(withTitle: "Later")
                         if alert.runModal() == .alertFirstButtonReturn {
                             let url = release.assets.first?.browserDownloadUrl ?? release.htmlUrl
-                            if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+                            if let u = URL(string: url) {
+                                UpdateDownloader.shared.download(u)
+                            }
                         }
                     } else {
                         let alert = NSAlert()
@@ -72,5 +74,96 @@ enum UpdateChecker {
             if x != y { return x > y }
         }
         return false
+    }
+}
+
+/// Downloads an update DMG into ~/Downloads with a progress window and
+/// mounts it when finished.
+@MainActor
+final class UpdateDownloader: NSObject, URLSessionDownloadDelegate {
+    static let shared = UpdateDownloader()
+
+    private var task: URLSessionDownloadTask?
+    private var session: URLSession {
+        URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+    }
+    private var panel: NSPanel?
+    private var label = NSTextField(labelWithString: "Downloading update…")
+    private var progress = NSProgressIndicator()
+    private var destinationName = "PDFReader-update.dmg"
+
+    func download(_ url: URL) {
+        destinationName = url.lastPathComponent
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 88),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Downloading Update"
+        panel.center()
+        label.stringValue = "Downloading " + destinationName + "…"
+        label.frame = NSRect(x: 20, y: 52, width: 320, height: 20)
+        progress.frame = NSRect(x: 20, y: 24, width: 320, height: 20)
+        progress.isIndeterminate = false
+        progress.doubleValue = 0
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancel.frame = NSRect(x: 130, y: -2, width: 100, height: 20)
+        cancel.bezelStyle = .texturedRounded
+        let view = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
+        view.addSubview(label); view.addSubview(progress); view.addSubview(cancel)
+        panel.contentView = view
+        panel.orderFrontRegardless()
+        self.panel = panel
+        task = session.downloadTask(with: url)
+        task?.resume()
+    }
+
+    @objc private func cancel() {
+        task?.cancel()
+        finish(error: NSError(domain: "UpdateDownloader", code: -1,
+                              userInfo: [NSLocalizedDescriptionKey: "Download cancelled."]))
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        let fraction = totalBytesExpectedToWrite > 0
+            ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+        Task { @MainActor in self.progress.doubleValue = fraction }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession, downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let dest = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(downloadTask.originalRequest?.url?.lastPathComponent ?? "PDFReader-update.dmg")
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.moveItem(at: location, to: dest)
+            Task { @MainActor in
+                self.panel?.orderOut(nil)
+                NSWorkspace.shared.open(dest)
+            }
+        } catch {
+            Task { @MainActor in self.finish(error: error) }
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?
+    ) {
+        if let error {
+            Task { @MainActor in self.finish(error: error) }
+        }
+    }
+
+    private func finish(error: Error) {
+        panel?.orderOut(nil)
+        let alert = NSAlert()
+        alert.messageText = "Download Failed"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
