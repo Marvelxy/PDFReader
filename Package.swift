@@ -6,6 +6,9 @@ let package = Package(
     platforms: [
         .macOS(.v14),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.0.0"),
+    ],
     targets: [
         .target(
             name: "PDFReaderKit",
@@ -16,7 +19,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "PDFReader",
-            dependencies: ["PDFReaderKit"],
+            dependencies: ["PDFReaderKit", "Sparkle"],
             path: "Sources/PDFReader",
             exclude: ["Resources"],
             swiftSettings: [

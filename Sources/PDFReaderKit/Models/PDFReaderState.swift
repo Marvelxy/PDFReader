@@ -67,6 +67,22 @@ public enum ReadingLayout: String, CaseIterable, Identifiable {
 /// Central document state shared by the viewer, sidebar and toolbar.
 @MainActor
 public final class PDFReaderState: ObservableObject {
+    // MARK: - Tab management
+
+    /// URLs of all open PDF tabs.
+    @Published public var tabURLs: [URL] = []
+
+    /// Index of the currently active tab.
+    @Published public var activeTabIndex: Int = 0 {
+        didSet {
+            if tabURLs.isEmpty { activeTabIndex = 0 }
+            else if activeTabIndex >= tabURLs.count { activeTabIndex = tabURLs.count - 1 }
+            else if activeTabIndex < 0 { activeTabIndex = 0 }
+        }
+    }
+
+    // MARK: - Current tab document state (always reflects active tab)
+
     @Published public var document: PDFDocument?
     @Published public var fileURL: URL?
     public var fileName: String { fileURL?.lastPathComponent ?? "No document" }
@@ -298,12 +314,17 @@ public final class PDFReaderState: ObservableObject {
 
     @discardableResult
     public func open(url: URL) -> Bool {
+        // Add URL to tabs if not already present
+        if !tabURLs.contains(url) {
+            tabURLs.append(url)
+        }
+        activeTabIndex = tabURLs.count - 1
+
         guard let doc = PDFDocument(url: url) else {
             statusMessage = "Could not open \(url.lastPathComponent)."
             return false
         }
-        // Stash where we were in the previous file before replacing it.
-        saveLastPosition()
+
         document = doc
         fileURL = url
         pageCount = doc.pageCount
