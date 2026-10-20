@@ -41,6 +41,7 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
 
 ## Install
 
+### From released DMG (recommended)
 1. Download `PDFReader-vX.Y.Z-macOS-universal.dmg` from
    [Releases](https://github.com/Marvelxy/PDFReader/releases).
 2. Open the DMG and drag **PDFReader** into **Applications**
@@ -51,6 +52,31 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
    this step; see `scripts/`.)
 4. To uninstall: drag PDFReader from Applications to Trash, and optionally
    delete its preferences (`~/Library/Preferences/com.example.pdfreader.plist`).
+
+### From source (build + copy to Applications)
+1. Clone the repo and install dependencies:
+   ```sh
+   git clone https://github.com/Marvelxy/PDFReader.git
+   cd PDFReader
+   swift build
+   ```
+2. Build the bundled app (required for macOS Tahoe+ cursor support):
+   ```sh
+   scripts/make-app.sh debug
+   ```
+3. Copy the app to Applications:
+   ```sh
+   cp -R .build/app/PDFReader.app /Applications/
+   ```
+4. First launch: right-click **PDFReader** → **Open** → **Open** once to
+   overcome Gatekeeper's ad-hoc signature. (Or sign with a Developer ID
+   + notarize for seamless launching.)
+
+### From source (swift run only)
+Running `swift run PDFReader` launches a headless binary without the
+app bundle — useful for quick testing but **not** recommended for daily
+use because cursor styles and other AppKit-dependent features won't
+render correctly on macOS 15+.
 
 ## Build & run
 
