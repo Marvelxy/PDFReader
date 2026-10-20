@@ -35,7 +35,7 @@ else
 fi
 
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Frameworks" "$APP_DIR/Contents/Resources"
 cp "$BIN" "$APP_DIR/Contents/MacOS/PDFReader"
 # Copy Sparkle framework for update checking
 cp -R ".build/$CONFIG/Sparkle.framework" "$APP_DIR/Contents/Frameworks/"
