@@ -435,6 +435,27 @@ public final class PDFReaderState: ObservableObject {
         return loadDocument(at: tabURLs[index])
     }
 
+    /// Reorders tabs: the tab at `from` takes the position of the tab at
+    /// `to` (the target shifts right), mirroring browser drag-and-drop.
+    /// The active tab stays active — its index is recomputed from its URL
+    /// after the move, so the displayed document never reloads. Session
+    /// order persists via the `tabURLs` observer.
+    @discardableResult
+    public func moveTab(from: Int, to: Int) -> Bool {
+        guard tabURLs.count > 1,
+              tabURLs.indices.contains(from),
+              tabURLs.indices.contains(to),
+              from != to
+        else { return false }
+        let activeURL = tabURLs.indices.contains(activeTabIndex) ? tabURLs[activeTabIndex] : nil
+        let moved = tabURLs.remove(at: from)
+        tabURLs.insert(moved, at: to)
+        if let activeURL, let idx = tabURLs.firstIndex(of: activeURL), idx != activeTabIndex {
+            activeTabIndex = idx
+        }
+        return true
+    }
+
     /// Closes the tab at `index`, activating a neighbor, or clears the
     /// view when the last tab closes.
     public func closeTab(at index: Int) {
