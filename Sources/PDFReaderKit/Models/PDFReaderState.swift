@@ -314,12 +314,51 @@ public final class PDFReaderState: ObservableObject {
 
     @discardableResult
     public func open(url: URL) -> Bool {
-        // Add URL to tabs if not already present
-        if !tabURLs.contains(url) {
+        // Re-opening an already-open file activates its existing tab.
+        if let idx = tabURLs.firstIndex(of: url) {
+            activeTabIndex = idx
+        } else {
             tabURLs.append(url)
+            activeTabIndex = tabURLs.count - 1
         }
-        activeTabIndex = tabURLs.count - 1
+        return loadDocument(at: url)
+    }
 
+    /// Switches the active tab and loads its document.
+    @discardableResult
+    public func switchToTab(_ index: Int) -> Bool {
+        guard tabURLs.indices.contains(index) else { return false }
+        activeTabIndex = index
+        return loadDocument(at: tabURLs[index])
+    }
+
+    /// Closes the tab at `index`, activating a neighbor, or clears the
+    /// view when the last tab closes.
+    public func closeTab(at index: Int) {
+        guard tabURLs.indices.contains(index) else { return }
+        tabURLs.remove(at: index)
+        if tabURLs.isEmpty {
+            activeTabIndex = 0
+            document = nil
+            fileURL = nil
+            pageCount = 0
+            outlineNodes = []
+            annotationRows = []
+            searchHits = []
+            searchQuery = ""
+            pdfView?.highlightedSelections = nil
+            pdfView?.currentSelection = nil
+            statusMessage = "Open a PDF to get started."
+            return
+        }
+        let next = min(index, tabURLs.count - 1)
+        activeTabIndex = next
+        loadDocument(at: tabURLs[next])
+    }
+
+    /// Loads `url` into the viewer. The URL must already be tracked in
+    /// `tabURLs` by the caller (`open`/`switchToTab`).
+    private func loadDocument(at url: URL) -> Bool {
         guard let doc = PDFDocument(url: url) else {
             statusMessage = "Could not open \(url.lastPathComponent)."
             return false
@@ -330,6 +369,8 @@ public final class PDFReaderState: ObservableObject {
         pageCount = doc.pageCount
         searchHits = []
         searchQuery = ""
+        pdfView?.highlightedSelections = nil
+        pdfView?.currentSelection = nil
         rebuildOutline()
         refreshAnnotations()
         undoStack.removeAll()

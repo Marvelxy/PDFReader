@@ -26,6 +26,11 @@ public struct ContentView: View {
                 sidebarDivider
             }
             VStack(spacing: 0) {
+                // Tab bar — shows open PDF tabs like Adobe Reader
+                if !state.tabURLs.isEmpty {
+                    TabBar(state: state)
+                        .frame(height: 32)
+                }
                 if state.document == nil {
                     welcomeView
                 } else {
@@ -767,6 +772,100 @@ extension View {
             self.colorInvert()
         } else {
             self
+        }
+    }
+}
+
+
+// MARK: - Tab Bar
+
+/// One tab: filename, click to switch, × to close.
+struct TabButton: View {
+    let title: String
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 10))
+                .foregroundStyle(isActive ? Color.accentColor : .secondary)
+            Text(title)
+                .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                .lineLimit(1)
+                .frame(maxWidth: 160, alignment: .leading)
+                .truncationMode(.middle)
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 14)
+                    .background(Circle().fill(Color.secondary.opacity(0.15)))
+            }
+            .buttonStyle(.plain)
+            .help("Close tab")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isActive ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .help(title)
+    }
+}
+
+/// Adobe-style tab bar, left-aligned, with a New Tab (+) button.
+struct TabBar: View {
+    @ObservedObject var state: PDFReaderState
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(state.tabURLs.enumerated()), id: \.element) { index, url in
+                TabButton(
+                    title: url.lastPathComponent,
+                    isActive: state.activeTabIndex == index,
+                    onSelect: { state.switchToTab(index) },
+                    onClose: { state.closeTab(at: index) }
+                )
+            }
+            Button {
+                openNewTab()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .background(Circle().fill(Color.primary.opacity(0.04)))
+            .help("Open PDF in new tab (⌘T)")
+            .keyboardShortcut("t", modifiers: .command)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(state.appTheme.chromeBackground)
+    }
+
+    private func openNewTab() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.pdf]
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                state.open(url: url)
+            }
         }
     }
 }
