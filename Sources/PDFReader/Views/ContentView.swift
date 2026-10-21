@@ -781,10 +781,12 @@ extension View {
 
 // MARK: - Tab Bar
 
-/// One tab: filename, click to switch, × to close.
+/// One tab: filename, click to switch, × to close. Also a drag source
+/// (rearrange) and drop target for sibling tabs.
 struct TabButton: View {
     let title: String
     let isActive: Bool
+    var isDropTarget: Bool = false
     let onSelect: () -> Void
     let onClose: () -> Void
 
@@ -818,8 +820,12 @@ struct TabButton: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
+                .strokeBorder(
+                    isDropTarget ? Color.accentColor : (isActive ? Color.accentColor.opacity(0.5) : .clear),
+                    style: StrokeStyle(lineWidth: 1.5, dash: isDropTarget ? [3, 3] : [])
+                )
         )
+        .opacity(isDropTarget ? 0.6 : 1)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .help(title)
@@ -827,17 +833,20 @@ struct TabButton: View {
 }
 
 /// Adobe-style tab bar, left-aligned, with a New Tab (+) button.
+/// Tabs are drag sources and drop targets: drop a tab onto another to
+/// take its position (browser-style reorder).
 struct TabBar: View {
     @ObservedObject var state: PDFReaderState
+    @State private var dropTargetIndex: Int?
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(Array(state.tabURLs.enumerated()), id: \.element) { index, url in
-                TabButton(
-                    title: url.lastPathComponent,
-                    isActive: state.activeTabIndex == index,
-                    onSelect: { state.switchToTab(index) },
-                    onClose: { state.closeTab(at: index) }
+                TabItem(
+                    state: state,
+                    url: url,
+                    index: index,
+                    dropTargetIndex: $dropTargetIndex
                 )
             }
             Button {
@@ -869,5 +878,54 @@ struct TabBar: View {
                 state.open(url: url)
             }
         }
+    }
+}
+
+/// One tab plus its drag-and-drop wiring, split out of `TabBar` so the
+/// modifier chain type-checks fast.
+private struct TabItem: View {
+    @ObservedObject var state: PDFReaderState
+    let url: URL
+    let index: Int
+    @Binding var dropTargetIndex: Int?
+
+    var body: some View {
+        TabButton(
+            title: url.lastPathComponent,
+            isActive: state.activeTabIndex == index,
+            isDropTarget: dropTargetIndex == index,
+            onSelect: { state.switchToTab(index) },
+            onClose: { state.closeTab(at: index) }
+        )
+        .onDrag { provider(for: url) }
+        .onDrop(of: [.plainText], isTargeted: isTargetedBinding) { providers in
+            handleDrop(providers, at: index)
+        }    }
+
+    private var isTargetedBinding: Binding<Bool> {
+        Binding(
+            get: { dropTargetIndex == index },
+            set: { dropTargetIndex = $0 ? index : nil }
+        )
+    }
+
+    private func provider(for url: URL) -> NSItemProvider {
+        NSItemProvider(object: url.absoluteString as NSString)
+    }
+
+    /// Reorders tabs when another tab is dropped on `index`. The payload
+    /// is the dropped tab's URL; `moveTab` re-snapshots the active index,
+    /// so the displayed document never reloads. The provider callback can
+    /// arrive off the main actor, so the reorder hops to main first.
+    private func handleDrop(_ providers: [NSItemProvider], at index: Int) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let string = object as? String, let url = URL(string: string) else { return }
+            DispatchQueue.main.async {
+                guard let from = state.tabURLs.firstIndex(of: url) else { return }
+                state.moveTab(from: from, to: index)
+            }
+        }
+        return true
     }
 }
