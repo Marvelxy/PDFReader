@@ -845,17 +845,24 @@ struct TabBar: View {
         let from: Int
         var p: Int
         var translation: CGFloat
+        /// Offset of the grabbed tab relative to its own layout frame.
+        /// Equals `translation` while `from` is unchanged; re-anchoring
+        /// the grab to a new slot after commit requires the frame delta
+        /// so the tab keeps its exact rendered position (no jump).
+        var grabDX: CGFloat
 
         init(from: Int) {
             self.from = from
             self.p = from
             self.translation = 0
+            self.grabDX = 0
         }
 
-        init(from: Int, p: Int, translation: CGFloat) {
+        init(from: Int, p: Int, translation: CGFloat, grabDX: CGFloat? = nil) {
             self.from = from
             self.p = p
             self.translation = translation
+            self.grabDX = grabDX ?? translation
         }
     }
 
@@ -911,7 +918,7 @@ struct TabBar: View {
     private func offsetX(for index: Int) -> CGFloat {
         guard let frame = frames[index] else { return 0 }
         if let drag = dragging, drag.from == index {
-            return drag.translation
+            return drag.grabDX
         }
         let order = displayOrder(for: dragging)
         guard let pos = order.firstIndex(of: index) else { return 0 }
@@ -973,14 +980,20 @@ struct TabBar: View {
                 }
                 if drag.p != drag.from {
                     // Re-anchor the grab to the dropped tab's new index in
-                    // the same batch as the reorder: otherwise the element
-                    // that now occupies the old index would inherit the
-                    // pointer offset for one paint and jerk back on the
-                    // settle (the "snap to the left"). With the grab still
-                    // under the pointer, only the dropped tab is offset;
-                    // clearing the state (next runloop, animated) then
-                    // springs just it into its committed slot.
-                    dragging = DragInfo(from: drag.p, p: drag.p, translation: drag.translation)
+                    // the same batch as the reorder, compensating for the
+                    // frame change (translation + old frame − new frame):
+                    // the tab renders exactly where it was, so it settles
+                    // only the short distance from under the pointer into
+                    // its committed slot instead of jumping and springing
+                    // the whole translation back (the "snap to the left").
+                    // Clearing the state on the next runloop, animated,
+                    // finishes that short settle.
+                    dragging = DragInfo(
+                        from: drag.p,
+                        p: drag.p,
+                        translation: drag.translation,
+                        grabDX: drag.translation + (frames[drag.from]?.minX ?? 0) - (frames[drag.p]?.minX ?? 0)
+                    )
                     state.moveTab(from: drag.from, to: drag.p)
                 }
                 DispatchQueue.main.async {
