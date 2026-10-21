@@ -182,26 +182,86 @@ public final class PDFReaderState: ObservableObject {
     /// switches and restores land on the saved page instead of page 0.
     public var pendingNavigationPageIndex: Int?
 
+    /// Exact visible location (page + point within the page) for a pending
+    /// navigation, preferred over `pendingNavigationPageIndex`. Set when a
+    /// captured tab location is available so switching back to a tab lands
+    /// on the same section of the page, not just the page top.
+    var pendingNavigationDestination: (pageIndex: Int, point: CGPoint)?
+
+    /// Per-file visible section captured when leaving its tab (keyed by
+    /// file path). Session-lifetime; one-shot on restore. Keyed by path so
+    /// tab removal/reordering can't orphan entries.
+    private var savedTabLocations: [String: (pageIndex: Int, point: CGPoint)] = [:]
+
+    /// Bound for `applyPendingNavigation` retries: initial PDFView layout
+    /// passes can reset the scroll position after a `go(to:)`, so the
+    /// navigation is re-issued until the view reports the target page — or
+    /// until this deadline expires (unreachable target, user navigating).
+    var pendingNavigationDeadline: Date?
+
     /// Applies the pending page to `view` and clears it. No-ops when the
-    /// document is missing or the index is out of bounds.
+    /// document is missing or out of sync with `view`.
     public func consumePendingNavigation(in view: PDFView) {
-        guard let idx = pendingNavigationPageIndex,
-              let doc = document,
-              idx < doc.pageCount,
-              let page = doc.page(at: idx)
-        else {
+        guard document != nil, view.document === document else { return }
+        applyPendingNavigation(in: view)
+    }
+
+    /// Executes the pending navigation (exact section first, page top
+    /// otherwise). One `go(to:)` fired around the document commit is not
+    /// enough: PDFView's initial layout pass can reset the scroll position
+    /// afterwards, silently landing the user back on the top page — so the
+    /// navigation is re-issued one runloop turn apart until the view
+    /// reports showing the target page, or the 2 s deadline expires.
+    private func applyPendingNavigation(in view: PDFView) {
+        guard let doc = document, doc === view.document else { return }
+        if let deadline = pendingNavigationDeadline, Date() >= deadline {
+            pendingNavigationDestination = nil
             pendingNavigationPageIndex = nil
+            pendingNavigationDeadline = nil
             return
         }
-        pendingNavigationPageIndex = nil
-        // Defer one runloop tick: straight after `document` is committed the
-        // view's initial layout resets the scroll position (and on the
-        // creation pass the view may not even be in a window yet), so a
-        // synchronous `go(to:)` lands mid-layout and the saved page is lost
-        // — the view opens on its top page instead.
+        if pendingNavigationDestination == nil, pendingNavigationPageIndex == nil {
+            pendingNavigationDeadline = nil
+            return
+        }
+        if pendingNavigationDeadline == nil {
+            pendingNavigationDeadline = Date().addingTimeInterval(2)
+        }
+        let targetPage: Int
+        let targetPoint: CGPoint?
+        if let dest = pendingNavigationDestination {
+            targetPage = dest.pageIndex
+            targetPoint = dest.point
+        } else if let idx = pendingNavigationPageIndex {
+            targetPage = idx
+            targetPoint = nil
+        } else {
+            return
+        }
+        guard targetPage < doc.pageCount, let page = doc.page(at: targetPage) else {
+            pendingNavigationDestination = nil
+            pendingNavigationPageIndex = nil
+            pendingNavigationDeadline = nil
+            return
+        }
         DispatchQueue.main.async { [weak self, weak view] in
             guard let view, let self, self.document === doc, view.document === doc else { return }
-            view.go(to: page)
+            if let point = targetPoint {
+                view.go(to: PDFDestination(page: page, at: point))
+            } else {
+                view.go(to: page)
+            }
+            let current = view.currentPage.flatMap { doc.index(for: $0) }
+            if current == targetPage {
+                self.pendingNavigationDestination = nil
+                self.pendingNavigationPageIndex = nil
+                self.pendingNavigationDeadline = nil
+            } else {
+                DispatchQueue.main.async { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    self.applyPendingNavigation(in: view)
+                }
+            }
         }
     }
 
@@ -353,6 +413,9 @@ public final class PDFReaderState: ObservableObject {
     public func open(url: URL) -> Bool {
         // Re-opening an already-open file activates its existing tab.
         if let idx = tabURLs.firstIndex(of: url) {
+            // Already showing this exact file? Nothing to reload — a reload
+            // would replace the document and reset the scroll position.
+            if idx == activeTabIndex, url == fileURL, document != nil { return true }
             activeTabIndex = idx
         } else {
             tabURLs.append(url)
@@ -365,6 +428,9 @@ public final class PDFReaderState: ObservableObject {
     @discardableResult
     public func switchToTab(_ index: Int) -> Bool {
         guard tabURLs.indices.contains(index) else { return false }
+        // Clicking the active tab: nothing to do — a reload would replace
+        // the document and reset the scroll position.
+        if index == activeTabIndex, tabURLs[index] == fileURL, document != nil { return true }
         activeTabIndex = index
         return loadDocument(at: tabURLs[index])
     }
@@ -396,6 +462,20 @@ public final class PDFReaderState: ObservableObject {
     /// Loads `url` into the viewer. The URL must already be tracked in
     /// `tabURLs` by the caller (`open`/`switchToTab`).
     private func loadDocument(at url: URL) -> Bool {
+        // Leaving the current tab: capture its exact visible section
+        // (page + point) so switching back returns there instead of the
+        // page top. Must run before `fileURL` is reassigned below.
+        if let view = pdfView,
+           let current = document,
+           let previousURL = fileURL,
+           previousURL != url,
+           view.document === current,
+           let dest = view.currentDestination,
+           let destPage = dest.page
+        {
+            let capturing = (pageIndex: current.index(for: destPage), point: dest.point)
+            savedTabLocations[previousURL.path] = capturing
+        }
         guard let doc = PDFDocument(url: url) else {
             statusMessage = "Could not open \(url.lastPathComponent)."
             return false
@@ -414,12 +494,17 @@ public final class PDFReaderState: ObservableObject {
         redoStack.removeAll()
         let saved = restoreLastPositionIndex() ?? 0
         currentPageIndex = saved
-        // Drive the view to the saved page on the next updateNSView pass —
+        // Drive the view to the saved location on the next updateNSView pass —
         // right now `pdfView` still shows the previous document, so a direct
         // `go(to:)` here would be aimed at the wrong PDF (the view commits
-        // the new document on a later SwiftUI tick). This is why tab
-        // switches used to open on the cover page.
-        pendingNavigationPageIndex = saved
+        // the new document on a later SwiftUI tick). Prefer an exact captured
+        // section for tab switches; fall back to the page top.
+        if let loc = savedTabLocations.removeValue(forKey: url.path) {
+            pendingNavigationDestination = loc
+            pendingNavigationPageIndex = nil
+        } else {
+            pendingNavigationPageIndex = saved
+        }
         statusMessage = "\(url.lastPathComponent) — \(doc.pageCount) pages"
         return true
     }
