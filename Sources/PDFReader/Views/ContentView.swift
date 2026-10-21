@@ -948,16 +948,18 @@ struct TabBar: View {
     }
 
     /// Display slot the dragged tab belongs in right now: every other
-    /// tab's slot in display order whose right edge the dragged tab's
-    /// center has crossed.
+    /// tab's slot in display order whose midpoint the dragged tab's
+    /// center has crossed. Committing at half-over (browser-style)
+    /// keeps the residual pointer-to-slot distance near zero, so the
+    /// drop needs almost no settle motion on a normal release.
     private func displayedSlot(for drag: DragInfo) -> Int {
         guard let frame = frames[drag.from] else { return drag.p }
         let center = frame.minX + frame.width / 2 + drag.translation
         let order = displayOrder(for: drag)
         var crossed = 0
         for (pos, tab) in order.enumerated() where tab != drag.from {
-            let right = slotOrigin(pos, in: order) + (frames[tab]?.width ?? 0)
-            if center > right { crossed += 1 }
+            let midpoint = slotOrigin(pos, in: order) + (frames[tab]?.width ?? 0) / 2
+            if center > midpoint { crossed += 1 }
         }
         return crossed
     }
@@ -997,7 +999,7 @@ struct TabBar: View {
                     state.moveTab(from: drag.from, to: drag.p)
                 }
                 DispatchQueue.main.async {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.95)) {
                         dragging = nil
                     }
                 }
@@ -1049,7 +1051,7 @@ private struct TabItem: View {
             onClose: { state.closeTab(at: index) }
         )
         .offset(x: offsetX)
-        .animation(isDragging ? nil : .spring(response: 0.25, dampingFraction: 0.85), value: offsetX)
+        .animation(isDragging ? nil : .spring(response: 0.25, dampingFraction: 0.95), value: offsetX)
     }
 }
 
