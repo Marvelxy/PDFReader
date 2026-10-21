@@ -28,8 +28,10 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
 - **Reading modes** — layout menu, book mode, RTL, night background,
   presentation (full-screen).
 - **Tabs + session restore** — open multiple PDFs as tabs in the tab bar
-  (⌘T / + button); click to switch, × to close, drag onto another tab to
-  rearrange them (the active document never reloads while reordering).
+  (⌘T / + button); click to switch, × to close, drag a tab sideways and it
+  slides live under the pointer while the other tabs spring out of the way;
+  release to drop it in place (the active document never reloads while
+  reordering).
   Switching back to a tab returns to the exact section of the page you
   left (not just the page top); quitting and relaunching reopens the
   same tabs with each file back on the page you left it.

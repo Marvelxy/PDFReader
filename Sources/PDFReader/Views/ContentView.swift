@@ -780,13 +780,10 @@ extension View {
 
 
 // MARK: - Tab Bar
-
-/// One tab: filename, click to switch, × to close. Also a drag source
-/// (rearrange) and drop target for sibling tabs.
+/// One tab: filename, click to switch, × to close.
 struct TabButton: View {
     let title: String
     let isActive: Bool
-    var isDropTarget: Bool = false
     let onSelect: () -> Void
     let onClose: () -> Void
 
@@ -820,12 +817,8 @@ struct TabButton: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(
-                    isDropTarget ? Color.accentColor : (isActive ? Color.accentColor.opacity(0.5) : .clear),
-                    style: StrokeStyle(lineWidth: 1.5, dash: isDropTarget ? [3, 3] : [])
-                )
+                .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
         )
-        .opacity(isDropTarget ? 0.6 : 1)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .help(title)
@@ -833,11 +826,35 @@ struct TabButton: View {
 }
 
 /// Adobe-style tab bar, left-aligned, with a New Tab (+) button.
-/// Tabs are drag sources and drop targets: drop a tab onto another to
-/// take its position (browser-style reorder).
+/// Tabs rearrange by dragging: the dragged tab follows the pointer while
+/// the other tabs spring out of the way slot by slot; the order commits
+/// on release (browser-style). Local `DragGesture` instead of a system
+/// drag session because only gestures can drive the mid-drag layout.
 struct TabBar: View {
     @ObservedObject var state: PDFReaderState
-    @State private var dropTargetIndex: Int?
+
+    /// Slot geometry per tab index, measured in the tab bar's coordinate
+    /// space. Layout frames are unaffected by `.offset`, so these are the
+    /// resting positions even while tabs are visually displaced.
+    @State private var frames: [Int: CGRect] = [:]
+    /// In-flight drag: the source index, its current display slot (as
+    /// tabs slide aside) and the pointer translation.
+    @State private var dragging: DragInfo?
+
+    private struct DragInfo {
+        let from: Int
+        var p: Int
+        var translation: CGFloat
+
+        init(from: Int) {
+            self.from = from
+            self.p = from
+            self.translation = 0
+        }
+    }
+
+    /// Space between adjacent tabs; must match the HStack's `spacing`.
+    private let gap: CGFloat = 4
 
     var body: some View {
         HStack(spacing: 4) {
@@ -846,7 +863,19 @@ struct TabBar: View {
                     state: state,
                     url: url,
                     index: index,
-                    dropTargetIndex: $dropTargetIndex
+                    isDragging: dragging?.from == index,
+                    offsetX: offsetX(for: index)
+                )
+                .modifier(DragLift(isDragging: dragging?.from == index))
+                .zIndex(dragging?.from == index ? 10 : 0)
+                .gesture(dragGesture(for: index))
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: TabFrameKey.self,
+                            value: [index: geo.frame(in: .named("tabBar"))]
+                        )
+                    }
                 )
             }
             Button {
@@ -862,10 +891,94 @@ struct TabBar: View {
             .keyboardShortcut("t", modifiers: .command)
             Spacer(minLength: 0)
         }
+        .coordinateSpace(name: "tabBar")
+        .onPreferenceChange(TabFrameKey.self) { frames = $0 }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(state.appTheme.chromeBackground)
+    }
+
+    /// Visual offset of tab `index`: the dragged tab follows the pointer
+    /// one to one; the others sit at their slot in the display order and
+    /// animate there (cranked by `DragLift`'s animation).
+    private func offsetX(for index: Int) -> CGFloat {
+        guard let frame = frames[index] else { return 0 }
+        if let drag = dragging, drag.from == index {
+            return drag.translation
+        }
+        let order = displayOrder(for: dragging)
+        guard let pos = order.firstIndex(of: index) else { return 0 }
+        return slotOrigin(pos, in: order) - frame.minX
+    }
+
+    /// Order the tabs are shown in: identity, or identity with the
+    /// dragged tab moved to its current display slot.
+    private func displayOrder(for drag: DragInfo?) -> [Int] {
+        var order = Array(state.tabURLs.indices)
+        if let drag, drag.p != drag.from {
+            order.remove(at: drag.from)
+            order.insert(drag.from, at: min(drag.p, order.count))
+        }
+        return order
+    }
+
+    /// Left edge of display slot `position`, laying the tabs out in
+    /// `order` from the row's resting origin with their own widths.
+    private func slotOrigin(_ position: Int, in order: [Int]) -> CGFloat {
+        guard let anchor = frames[0]?.minX else { return 0 }
+        var x = anchor
+        for k in 0..<position {
+            x += (frames[order[k]]?.width ?? 0) + gap
+        }
+        return x
+    }
+
+    /// Display slot the dragged tab belongs in right now: every other
+    /// tab's slot in display order whose right edge the dragged tab's
+    /// center has crossed.
+    private func displayedSlot(for drag: DragInfo) -> Int {
+        guard let frame = frames[drag.from] else { return drag.p }
+        let center = frame.minX + frame.width / 2 + drag.translation
+        let order = displayOrder(for: drag)
+        var crossed = 0
+        for (pos, tab) in order.enumerated() where tab != drag.from {
+            let right = slotOrigin(pos, in: order) + (frames[tab]?.width ?? 0)
+            if center > right { crossed += 1 }
+        }
+        return crossed
+    }
+
+    private func dragGesture(for index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                if dragging == nil {
+                    dragging = DragInfo(from: index)
+                }
+                guard var drag = dragging, drag.from == index, frames[index] != nil else { return }
+                drag.translation = value.translation.width
+                drag.p = displayedSlot(for: drag)
+                dragging = drag
+            }
+            .onEnded { _ in
+                guard let drag = dragging, drag.from == index else {
+                    dragging = nil
+                    return
+                }
+                if drag.p != drag.from {
+                    // Commit first, then clear the drag state on the next
+                    // runloop turn: with the order already final, the
+                    // dragged tab springs from under the pointer into its
+                    // committed slot, and the other tabs' offsets zero
+                    // against the same final layout — no visual jump.
+                    state.moveTab(from: drag.from, to: drag.p)
+                }
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        dragging = nil
+                    }
+                }
+            }
     }
 
     private func openNewTab() {
@@ -881,51 +994,45 @@ struct TabBar: View {
     }
 }
 
-/// One tab plus its drag-and-drop wiring, split out of `TabBar` so the
-/// modifier chain type-checks fast.
+/// Elevated look for the tab being dragged: gentle magnification and a
+/// drop shadow. The modifiers must be unconditional (values change, not
+/// the modifier list) — a structural branch swap mid-gesture would cancel
+/// the active drag.
+private struct DragLift: ViewModifier {
+    let isDragging: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isDragging ? 1.05 : 1)
+            .shadow(color: .black.opacity(isDragging ? 0.35 : 0), radius: isDragging ? 6 : 0, y: 2)
+    }
+}
+
+/// One tab plus its sliding offset, split out of `TabBar` so the modifier
+/// chain type-checks fast. Slides with a spring unless it's the dragged
+/// tab itself, which must track the pointer exactly.
 private struct TabItem: View {
     @ObservedObject var state: PDFReaderState
     let url: URL
     let index: Int
-    @Binding var dropTargetIndex: Int?
+    let isDragging: Bool
+    let offsetX: CGFloat
 
     var body: some View {
         TabButton(
             title: url.lastPathComponent,
             isActive: state.activeTabIndex == index,
-            isDropTarget: dropTargetIndex == index,
             onSelect: { state.switchToTab(index) },
             onClose: { state.closeTab(at: index) }
         )
-        .onDrag { provider(for: url) }
-        .onDrop(of: [.plainText], isTargeted: isTargetedBinding) { providers in
-            handleDrop(providers, at: index)
-        }    }
-
-    private var isTargetedBinding: Binding<Bool> {
-        Binding(
-            get: { dropTargetIndex == index },
-            set: { dropTargetIndex = $0 ? index : nil }
-        )
+        .offset(x: offsetX)
+        .animation(isDragging ? nil : .spring(response: 0.25, dampingFraction: 0.85), value: offsetX)
     }
+}
 
-    private func provider(for url: URL) -> NSItemProvider {
-        NSItemProvider(object: url.absoluteString as NSString)
-    }
-
-    /// Reorders tabs when another tab is dropped on `index`. The payload
-    /// is the dropped tab's URL; `moveTab` re-snapshots the active index,
-    /// so the displayed document never reloads. The provider callback can
-    /// arrive off the main actor, so the reorder hops to main first.
-    private func handleDrop(_ providers: [NSItemProvider], at index: Int) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadObject(ofClass: NSString.self) { object, _ in
-            guard let string = object as? String, let url = URL(string: string) else { return }
-            DispatchQueue.main.async {
-                guard let from = state.tabURLs.firstIndex(of: url) else { return }
-                state.moveTab(from: from, to: index)
-            }
-        }
-        return true
+private struct TabFrameKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
