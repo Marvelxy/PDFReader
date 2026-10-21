@@ -851,6 +851,12 @@ struct TabBar: View {
             self.p = from
             self.translation = 0
         }
+
+        init(from: Int, p: Int, translation: CGFloat) {
+            self.from = from
+            self.p = p
+            self.translation = translation
+        }
     }
 
     /// Space between adjacent tabs; must match the HStack's `spacing`.
@@ -966,11 +972,15 @@ struct TabBar: View {
                     return
                 }
                 if drag.p != drag.from {
-                    // Commit first, then clear the drag state on the next
-                    // runloop turn: with the order already final, the
-                    // dragged tab springs from under the pointer into its
-                    // committed slot, and the other tabs' offsets zero
-                    // against the same final layout — no visual jump.
+                    // Re-anchor the grab to the dropped tab's new index in
+                    // the same batch as the reorder: otherwise the element
+                    // that now occupies the old index would inherit the
+                    // pointer offset for one paint and jerk back on the
+                    // settle (the "snap to the left"). With the grab still
+                    // under the pointer, only the dropped tab is offset;
+                    // clearing the state (next runloop, animated) then
+                    // springs just it into its committed slot.
+                    dragging = DragInfo(from: drag.p, p: drag.p, translation: drag.translation)
                     state.moveTab(from: drag.from, to: drag.p)
                 }
                 DispatchQueue.main.async {
