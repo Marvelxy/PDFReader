@@ -70,7 +70,9 @@ public final class PDFReaderState: ObservableObject {
     // MARK: - Tab management
 
     /// URLs of all open PDF tabs.
-    @Published public var tabURLs: [URL] = []
+    @Published public var tabURLs: [URL] = [] {
+        didSet { saveSession() }
+    }
 
     /// Index of the currently active tab.
     @Published public var activeTabIndex: Int = 0 {
@@ -78,6 +80,7 @@ public final class PDFReaderState: ObservableObject {
             if tabURLs.isEmpty { activeTabIndex = 0 }
             else if activeTabIndex >= tabURLs.count { activeTabIndex = tabURLs.count - 1 }
             else if activeTabIndex < 0 { activeTabIndex = 0 }
+            saveSession()
         }
     }
 
@@ -223,6 +226,11 @@ public final class PDFReaderState: ObservableObject {
     private static let thumbnailScaleKey = "com.pdfreader.thumbnailScale.v1"
     private static let remembersPositionKey = "com.pdfreader.remembersLastPosition.v1"
     private static let lastPositionsKey = "com.pdfreader.lastPositions.v1"
+    private static let openTabsKey = "com.pdfreader.openTabs.v1"
+    private static let activeTabKey = "com.pdfreader.activeTab.v1"
+    /// While restoring the session, tab mutations must not write back
+    /// (mirrors the `loadingPrefs` guard for highlight/theme prefs).
+    private var restoringSession = false
     /// While loading, assignments must not save back mid-load (the choice
     /// restores before the custom value, which would clobber it).
     private var loadingPrefs = false
@@ -314,12 +322,51 @@ public final class PDFReaderState: ObservableObject {
 
     @discardableResult
     public func open(url: URL) -> Bool {
-        // Add URL to tabs if not already present
-        if !tabURLs.contains(url) {
+        // Re-opening an already-open file activates its existing tab.
+        if let idx = tabURLs.firstIndex(of: url) {
+            activeTabIndex = idx
+        } else {
             tabURLs.append(url)
+            activeTabIndex = tabURLs.count - 1
         }
-        activeTabIndex = tabURLs.count - 1
+        return loadDocument(at: url)
+    }
 
+    /// Switches the active tab and loads its document.
+    @discardableResult
+    public func switchToTab(_ index: Int) -> Bool {
+        guard tabURLs.indices.contains(index) else { return false }
+        activeTabIndex = index
+        return loadDocument(at: tabURLs[index])
+    }
+
+    /// Closes the tab at `index`, activating a neighbor, or clears the
+    /// view when the last tab closes.
+    public func closeTab(at index: Int) {
+        guard tabURLs.indices.contains(index) else { return }
+        tabURLs.remove(at: index)
+        if tabURLs.isEmpty {
+            activeTabIndex = 0
+            document = nil
+            fileURL = nil
+            pageCount = 0
+            outlineNodes = []
+            annotationRows = []
+            searchHits = []
+            searchQuery = ""
+            pdfView?.highlightedSelections = nil
+            pdfView?.currentSelection = nil
+            statusMessage = "Open a PDF to get started."
+            return
+        }
+        let next = min(index, tabURLs.count - 1)
+        activeTabIndex = next
+        loadDocument(at: tabURLs[next])
+    }
+
+    /// Loads `url` into the viewer. The URL must already be tracked in
+    /// `tabURLs` by the caller (`open`/`switchToTab`).
+    private func loadDocument(at url: URL) -> Bool {
         guard let doc = PDFDocument(url: url) else {
             statusMessage = "Could not open \(url.lastPathComponent)."
             return false
@@ -330,6 +377,8 @@ public final class PDFReaderState: ObservableObject {
         pageCount = doc.pageCount
         searchHits = []
         searchQuery = ""
+        pdfView?.highlightedSelections = nil
+        pdfView?.currentSelection = nil
         rebuildOutline()
         refreshAnnotations()
         undoStack.removeAll()
@@ -365,9 +414,55 @@ public final class PDFReaderState: ObservableObject {
 
     private func restoreLastPositionIndex() -> Int? {
         guard remembersLastPosition, let url = fileURL else { return nil }
-        let all = UserDefaults.standard.dictionary(forKey: Self.lastPositionsKey) as? [String: Int]
-        guard let idx = all?[url.path] else { return nil }
+        let all = UserDefaults.standard.dictionary(forKey: Self.lastPositionsKey) as? [String: Int] ?? [:]
+        guard let idx = all[url.path] else { return nil }
         return max(0, min(idx, max(0, pageCount - 1)))
+    }
+
+    // MARK: - Session restore
+
+    /// Persists the open tabs and active tab so quitting and relaunching
+    /// brings back the same documents (per-file last page is saved by
+    /// `saveLastPosition()` on every page change).
+    private func saveSession() {
+        guard !restoringSession else { return }
+        UserDefaults.standard.set(tabURLs.map(\.path), forKey: Self.openTabsKey)
+        UserDefaults.standard.set(activeTabIndex, forKey: Self.activeTabKey)
+    }
+
+    /// Reopens the tabs from the previous session. Files that no longer
+    /// exist are skipped; if nothing loads, the app starts clean. Called
+    /// from `ContentView.onAppear` once the PDF view exists (also keeps
+    /// library tests, which build a bare state, unaffected).
+    public func restoreSession() {
+        guard document == nil, tabURLs.isEmpty else { return }
+        let saved = UserDefaults.standard.stringArray(forKey: Self.openTabsKey) ?? []
+        let urls = saved
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else { return }
+
+        restoringSession = true
+        tabURLs = urls
+        let savedIndex = UserDefaults.standard.integer(forKey: Self.activeTabKey)
+        activeTabIndex = min(max(0, savedIndex), urls.count - 1)
+        restoringSession = false
+
+        // Prefer the active tab; if it fails to parse, try the others.
+        var loaded = false
+        for idx in [activeTabIndex] + tabURLs.indices.filter({ $0 != activeTabIndex }) {
+            activeTabIndex = idx
+            if loadDocument(at: tabURLs[idx]) {
+                loaded = true
+                break
+            }
+        }
+        if !loaded {
+            tabURLs = []
+            activeTabIndex = 0
+            statusMessage = "Open a PDF to get started."
+        }
+        saveSession()
     }
 
     // MARK: - Navigation
