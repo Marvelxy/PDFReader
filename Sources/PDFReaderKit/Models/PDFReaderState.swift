@@ -176,6 +176,35 @@ public final class PDFReaderState: ObservableObject {
     /// Set by `PDFKitView.Coordinator` on creation.
     public weak var pdfView: PDFView?
 
+    /// Page the PDF view should be driven to on its next SwiftUI update
+    /// pass. Consumed (and cleared) by `PDFKitView.updateNSView`, which is
+    /// where the document is actually committed to the PDFView — so tab
+    /// switches and restores land on the saved page instead of page 0.
+    public var pendingNavigationPageIndex: Int?
+
+    /// Applies the pending page to `view` and clears it. No-ops when the
+    /// document is missing or the index is out of bounds.
+    public func consumePendingNavigation(in view: PDFView) {
+        guard let idx = pendingNavigationPageIndex,
+              let doc = document,
+              idx < doc.pageCount,
+              let page = doc.page(at: idx)
+        else {
+            pendingNavigationPageIndex = nil
+            return
+        }
+        pendingNavigationPageIndex = nil
+        // Defer one runloop tick: straight after `document` is committed the
+        // view's initial layout resets the scroll position (and on the
+        // creation pass the view may not even be in a window yet), so a
+        // synchronous `go(to:)` lands mid-layout and the saved page is lost
+        // — the view opens on its top page instead.
+        DispatchQueue.main.async { [weak self, weak view] in
+            guard let view, let self, self.document === doc, view.document === doc else { return }
+            view.go(to: page)
+        }
+    }
+
     /// Undoable annotation change. PDFKit has no undo support, so the state
     /// records inverse operations itself.
     private enum AnnotationChange {
@@ -385,10 +414,13 @@ public final class PDFReaderState: ObservableObject {
         redoStack.removeAll()
         let saved = restoreLastPositionIndex() ?? 0
         currentPageIndex = saved
+        // Drive the view to the saved page on the next updateNSView pass —
+        // right now `pdfView` still shows the previous document, so a direct
+        // `go(to:)` here would be aimed at the wrong PDF (the view commits
+        // the new document on a later SwiftUI tick). This is why tab
+        // switches used to open on the cover page.
+        pendingNavigationPageIndex = saved
         statusMessage = "\(url.lastPathComponent) — \(doc.pageCount) pages"
-        if let page = doc.page(at: saved) {
-            pdfView?.go(to: page)
-        }
         return true
     }
 
@@ -472,8 +504,10 @@ public final class PDFReaderState: ObservableObject {
         let clamped = max(0, min(index, pageCount - 1))
         currentPageIndex = clamped
         saveLastPosition()
-        if viaView, let page = doc.page(at: clamped) {
-            pdfView?.go(to: page)
+        // Navigation goes through the pending target so the PDFView moves
+        // on the next updateNSView pass — see consumePendingNavigation.
+        if viaView {
+            pendingNavigationPageIndex = clamped
         }
     }
 
@@ -559,16 +593,16 @@ public final class PDFReaderState: ObservableObject {
     public func goToOutline(_ node: PDFOutlineNode) {
         guard let doc = document else { return }
         if let dest = node.outline.destination, let page = dest.page {
-            let index = doc.index(for: page)
-            goToPage(index: index)
+            // viaView: false — the exact destination jump below replaces
+            // the coarse page-top navigation.
+            goToPage(index: doc.index(for: page), viaView: false)
             if let view = pdfView {
                 view.go(to: dest)
             }
         } else if let action = node.outline.action as? PDFActionGoTo {
             let dest = action.destination
             if let page = dest.page {
-                let index = doc.index(for: page)
-                goToPage(index: index)
+                goToPage(index: doc.index(for: page), viaView: false)
                 pdfView?.go(to: dest)
             }
         } else if let pageIndex = node.destinationPageIndex {
@@ -836,7 +870,7 @@ public final class PDFReaderState: ObservableObject {
     }
 
     public func goToAnnotation(_ row: PDFAnnotationRow) {
-        goToPage(index: row.pageIndex)
+        goToPage(index: row.pageIndex, viaView: false)
         if let doc = document, let page = doc.page(at: row.pageIndex) {
             pdfView?.go(to: page.bounds(for: .mediaBox), on: page)
         }

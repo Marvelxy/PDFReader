@@ -57,14 +57,14 @@ public struct PDFKitView: NSViewRepresentable {
         // See makeNSView: white pre-invert -> black post-invert in dark themes.
         pdfView.backgroundColor = state.usesDarkPages ? .white : .windowBackgroundColor
 
-        // Keep the visible page in sync when sidebar/search drives navigation.
-        if let doc = state.document,
-           let current = pdfView.currentPage,
-           doc.index(for: current) != state.currentPageIndex,
-           let target = doc.page(at: state.currentPageIndex)
-        {
-            pdfView.go(to: target)
-        }
+        // Navigate only when state explicitly requests it (open, tab
+        // switch, restore, toolbar page nav). Never derive navigation from
+        // the live view page: PDFView reports its most-visible page
+        // asynchronously during scrolling, so comparing against
+        // `currentPageIndex` here fired stale `go(to:)`s that yanked the
+        // view back mid-scroll and kept the toolbar/status page numbers
+        // from updating.
+        state.consumePendingNavigation(in: pdfView)
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -81,24 +81,49 @@ public struct PDFKitView: NSViewRepresentable {
 
         @objc func pageChanged(_ note: Notification) {
             guard let view = note.object as? PDFView else { return }
-            Task { @MainActor in
-                self.state?.syncCurrentPageFromView(view)
+            // PDFKit posts these on the main thread; sync synchronously so
+            // the toolbar page field and status bar update the same frame
+            // the user scrolls (the previous one-frame-hop Task delayed the
+            // update past SwiftUI's next updateNSView pass). The thread
+            // check keeps assumeIsolated safe if PDFKit ever posts async.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self.state?.syncCurrentPageFromView(view)
+                }
+            } else {
+                Task { @MainActor in
+                    self.state?.syncCurrentPageFromView(view)
+                }
             }
         }
 
         @objc func scaleChanged(_ note: Notification) {
             guard let view = note.object as? PDFView else { return }
-            Task { @MainActor in
-                if let s = self.state, view.scaleFactor != s.scaleFactor {
-                    s.scaleFactor = view.scaleFactor
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    if let s = self.state, view.scaleFactor != s.scaleFactor {
+                        s.scaleFactor = view.scaleFactor
+                    }
+                }
+            } else {
+                Task { @MainActor in
+                    if let s = self.state, view.scaleFactor != s.scaleFactor {
+                        s.scaleFactor = view.scaleFactor
+                    }
                 }
             }
         }
 
         @objc func selectionChanged(_ note: Notification) {
             guard note.object is PDFView else { return }
-            Task { @MainActor in
-                self.state?.handleSelectionChange()
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self.state?.handleSelectionChange()
+                }
+            } else {
+                Task { @MainActor in
+                    self.state?.handleSelectionChange()
+                }
             }
         }
     }
