@@ -850,12 +850,16 @@ struct TabBar: View {
         /// the grab to a new slot after commit requires the frame delta
         /// so the tab keeps its exact rendered position (no jump).
         var grabDX: CGFloat
+        /// Translation captured when tracking began, subtracted so the
+        /// threshold-distance pointer travel doesn't jump the tab.
+        var startAt: CGFloat
 
-        init(from: Int) {
+        init(from: Int, startAt: CGFloat = 0) {
             self.from = from
             self.p = from
             self.translation = 0
             self.grabDX = 0
+            self.startAt = startAt
         }
 
         init(from: Int, p: Int, translation: CGFloat, grabDX: CGFloat? = nil) {
@@ -863,6 +867,7 @@ struct TabBar: View {
             self.p = p
             self.translation = translation
             self.grabDX = grabDX ?? translation
+            self.startAt = 0
         }
     }
 
@@ -968,10 +973,14 @@ struct TabBar: View {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
                 if dragging == nil {
-                    dragging = DragInfo(from: index)
+                    // Baseline the translation at gesture activation so
+                    // the pointer travel needed to cross the threshold
+                    // (which happens before tracking) isn't replayed as
+                    // one jump when the tab starts following.
+                    dragging = DragInfo(from: index, startAt: value.translation.width)
                 }
                 guard var drag = dragging, drag.from == index, frames[index] != nil else { return }
-                drag.translation = value.translation.width
+                drag.translation = value.translation.width - drag.startAt
                 drag.p = displayedSlot(for: drag)
                 dragging = drag
             }
@@ -999,7 +1008,7 @@ struct TabBar: View {
                     state.moveTab(from: drag.from, to: drag.p)
                 }
                 DispatchQueue.main.async {
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.95)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.95)) {
                         dragging = nil
                     }
                 }
@@ -1051,7 +1060,15 @@ private struct TabItem: View {
             onClose: { state.closeTab(at: index) }
         )
         .offset(x: offsetX)
-        .animation(isDragging ? nil : .spring(response: 0.25, dampingFraction: 0.95), value: offsetX)
+        // Dragged: a short linear chase smooths the discrete mouse-event
+        // steps (pointer weight, Chrome-like). Resting: spring for slot
+        // slides and the drop settle — same curve everywhere reads smooth.
+        .animation(
+            isDragging
+                ? .linear(duration: 0.05)
+                : .spring(response: 0.3, dampingFraction: 0.95),
+            value: offsetX
+        )
     }
 }
 
