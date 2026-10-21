@@ -184,6 +184,8 @@ public struct ContentView: View {
         .onAppear {
             AboutWindow.open = { openWindow(id: "about") }
             SettingsWindow.open = { openWindow(id: "settings") }
+            // Bring back the tabs and pages that were open at last quit.
+            state.restoreSession()
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`
             if let sample = ProcessInfo.processInfo.environment["PDFREADER_SAMPLE"] {
                 let url = URL(fileURLWithPath: sample)
