@@ -159,6 +159,33 @@ func run() async -> Int {
         "reading layouts map to distinct PDFKit display modes",
         failures: &failures
     )
+    // Reading progress: first page is 0%, last page is 100%.
+    do {
+        let progress = PDFReaderState()
+        check(progress.readingPercentage == 0, "reading percentage empty is 0", failures: &failures)
+        progress.pageCount = 4
+        progress.currentPageIndex = 0
+        check(progress.readingPercentage == 0, "reading percentage starts at 0", failures: &failures)
+        progress.currentPageIndex = 1
+        check(progress.readingPercentage == 33, "reading percentage interpolates", failures: &failures)
+        progress.currentPageIndex = 3
+        check(progress.readingPercentage == 100, "reading percentage reaches 100", failures: &failures)
+    }
+    // Page highlight: blue by default, persisted after a change.
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
+    do {
+        let hl = PDFReaderState()
+        let c = hl.pageHighlightColor.usingColorSpace(.sRGB)
+        check(
+            (c?.blueComponent ?? 0) > 0.8 && (c?.blueComponent ?? 0) > (c?.redComponent ?? 1),
+            "page highlight defaults to blue",
+            failures: &failures
+        )
+        hl.pageHighlightColor = NSColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1.0)
+        let reloaded = PDFReaderState().pageHighlightColor.usingColorSpace(.sRGB)
+        check(abs((reloaded?.redComponent ?? 0) - 0.9) < 0.001, "page highlight color persists", failures: &failures)
+    }
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
 
     UserDefaults.standard.removeObject(forKey: "com.pdfreader.bookmarks.v1")
     let store = BookmarkStore()

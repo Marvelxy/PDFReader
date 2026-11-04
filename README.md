@@ -9,6 +9,11 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
 
 - **Basic viewing** — open PDFs, continuous / single / two-up layouts,
   zoom in/out + auto-fit, page navigation, thumbnail strip.
+- **Reading progress** — the status bar shows the current page plus the
+  percentage of the document read, updated as you scroll.
+- **Customizable page highlight** — the current page in the Pages sidebar
+  is highlighted in blue by default; pick any color from the swatch in the
+  thumbnail toolbar (persisted).
 - **Search + outline** — full-text search with match list + highlight,
   table-of-contents navigation, per-file bookmarks (persisted).
 - **Annotations** — highlight, underline, strikethrough, sticky notes with

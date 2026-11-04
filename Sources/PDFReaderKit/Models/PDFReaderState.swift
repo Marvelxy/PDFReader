@@ -108,6 +108,10 @@ public final class PDFReaderState: ObservableObject {
     @Published public var outlineNodes: [PDFOutlineNode] = []
     @Published public var annotationRows: [PDFAnnotationRow] = []
 
+    /// Bumped whenever page content changes (annotations added/removed)
+    /// so thumbnail caches can invalidate.
+    @Published public var thumbnailRevision: Int = 0
+
     @Published public var annotationMode: AnnotationMode = .select
     @Published public var highlightColor: HighlightColor = .yellow {
         didSet { saveHighlightPrefs() }
@@ -127,6 +131,24 @@ public final class PDFReaderState: ObservableObject {
         }
     }
 
+    /// Color used to highlight the current page in the Pages sidebar.
+    /// Defaults to blue and is persisted across relaunches.
+    @Published public var pageHighlightColor: NSColor = .systemBlue {
+        didSet {
+            if pageHighlightColor.colorSpace != .sRGB,
+               let converted = pageHighlightColor.usingColorSpace(.sRGB)
+            {
+                pageHighlightColor = converted
+            }
+            savePageHighlightColor()
+        }
+    }
+
+    /// SwiftUI bridge for `pageHighlightColor`.
+    public var pageHighlightSwiftUIColor: Color {
+        Color(pageHighlightColor)
+    }
+
     /// User-selected shortlist cycled by "Next color", in order.
     @Published public var favoriteColors: [HighlightColor] = [.yellow, .green, .pink] {
         didSet { saveHighlightPrefs() }
@@ -139,6 +161,22 @@ public final class PDFReaderState: ObservableObject {
 
     public var resolvedHighlightColor: Color {
         highlightColor == .custom ? Color(customHighlightColor) : highlightColor.swiftUIColor
+    }
+
+    // MARK: - Reading progress
+
+    /// Fraction of the document read, 0...1. The first page reads as 0%
+    /// and the last page as 100%, interpolating linearly in between.
+    public var readingProgress: Double {
+        guard pageCount > 0 else { return 0 }
+        guard pageCount > 1 else { return 1 }
+        let page = min(max(currentPageIndex, 0), pageCount - 1)
+        return Double(page) / Double(pageCount - 1)
+    }
+
+    /// Reading progress as a whole percentage (0...100).
+    public var readingPercentage: Int {
+        Int((readingProgress * 100).rounded())
     }
 
     @Published public var statusMessage: String = "Open a PDF to get started."
@@ -310,6 +348,7 @@ public final class PDFReaderState: ObservableObject {
 
     private static let highlightColorKey = "com.pdfreader.highlightColor.v1"
     private static let customColorKey = "com.pdfreader.highlightCustomColor.v1"
+    private static let pageHighlightColorKey = "com.pdfreader.pageHighlightColor.v1"
     private static let favoritesKey = "com.pdfreader.highlightFavorites.v1"
     private static let themeKey = "com.pdfreader.appTheme.v1"
     private static let thumbnailScaleKey = "com.pdfreader.thumbnailScale.v1"
@@ -341,6 +380,16 @@ public final class PDFReaderState: ObservableObject {
         }
     }
 
+    private func savePageHighlightColor() {
+        guard !loadingPrefs else { return }
+        if let srgb = pageHighlightColor.usingColorSpace(.sRGB) {
+            UserDefaults.standard.set(
+                "\(srgb.redComponent) \(srgb.greenComponent) \(srgb.blueComponent)",
+                forKey: Self.pageHighlightColorKey
+            )
+        }
+    }
+
     private func loadHighlightPrefs() {
         loadingPrefs = true
         defer { loadingPrefs = false }
@@ -353,6 +402,17 @@ public final class PDFReaderState: ObservableObject {
             let parts = str.split(separator: " ").compactMap { Double(String($0)) }
             if parts.count == 3 {
                 customHighlightColor = NSColor(
+                    srgbRed: CGFloat(parts[0]),
+                    green: CGFloat(parts[1]),
+                    blue: CGFloat(parts[2]),
+                    alpha: 1.0
+                )
+            }
+        }
+        if let str = UserDefaults.standard.string(forKey: Self.pageHighlightColorKey) {
+            let parts = str.split(separator: " ").compactMap { Double(String($0)) }
+            if parts.count == 3 {
+                pageHighlightColor = NSColor(
                     srgbRed: CGFloat(parts[0]),
                     green: CGFloat(parts[1]),
                     blue: CGFloat(parts[2]),
@@ -786,6 +846,7 @@ public final class PDFReaderState: ObservableObject {
     // MARK: - Annotations
 
     public func refreshAnnotations() {
+        thumbnailRevision &+= 1
         guard let doc = document else {
             annotationRows = []
             return

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import XCTest
 
@@ -60,5 +61,39 @@ final class ThemeAndSidebarTests: XCTestCase {
         state.nightMode = true
         XCTAssertEqual(state.appTheme, .dark)
         XCTAssertTrue(state.usesDarkPages)
+    }
+
+    @MainActor
+    func testReadingProgressTracksCurrentPage() {
+        let state = PDFReaderState()
+        XCTAssertEqual(state.readingProgress, 0)
+        XCTAssertEqual(state.readingPercentage, 0)
+
+        state.pageCount = 10
+        state.currentPageIndex = 0
+        XCTAssertEqual(state.readingPercentage, 0)
+        state.currentPageIndex = 4
+        XCTAssertEqual(state.readingProgress, 4.0 / 9.0, accuracy: 0.0001)
+        XCTAssertEqual(state.readingPercentage, 44)
+        state.currentPageIndex = 9
+        XCTAssertEqual(state.readingPercentage, 100)
+    }
+
+    @MainActor
+    func testPageHighlightDefaultsToBlueAndPersists() {
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
+        let state = PDFReaderState()
+        let defaultComponents = state.pageHighlightColor.usingColorSpace(.sRGB)
+        XCTAssertNotNil(defaultComponents)
+        XCTAssertGreaterThan(defaultComponents?.blueComponent ?? 0, 0.8)
+        XCTAssertGreaterThan(defaultComponents?.blueComponent ?? 0, defaultComponents?.redComponent ?? 1)
+
+        state.pageHighlightColor = NSColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1.0)
+        let reloaded = PDFReaderState().pageHighlightColor.usingColorSpace(.sRGB)
+        XCTAssertEqual(reloaded?.redComponent ?? 0, 0.9, accuracy: 0.001)
+        XCTAssertEqual(reloaded?.greenComponent ?? 0, 0.3, accuracy: 0.001)
+        XCTAssertEqual(reloaded?.blueComponent ?? 0, 0.2, accuracy: 0.001)
+
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
     }
 }

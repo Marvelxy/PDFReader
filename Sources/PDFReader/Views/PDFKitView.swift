@@ -129,62 +129,168 @@ public struct PDFKitView: NSViewRepresentable {
     }
 }
 
-/// Thumbnail strip used in the sidebar. Separate representable because
-/// `PDFThumbnailView` must share the same `PDFView` instance.
+/// Thumbnail strip used in the sidebar. Renders page thumbnails in a lazy
+/// stack so the current page can be highlighted with a user-chosen color
+/// (PDFThumbnailView owns its selection color and offers no API for it).
 /// Thumbnail size follows `state.thumbnailScale` (0.5...5.0, 1.0 = 72x96).
-public struct PDFThumbnailStrip: NSViewRepresentable {
+public struct PDFThumbnailStrip: View {
     @ObservedObject public var state: PDFReaderState
 
     public init(state: PDFReaderState) {
         self.state = state
     }
 
-    public func makeNSView(context: Context) -> PDFThumbnailView {
-        let thumbs = PDFThumbnailView()
-        thumbs.thumbnailSize = scaledThumbnailSize(for: state.thumbnailScale)
-        thumbs.backgroundColor = .clear
-        return thumbs
-    }
-
-    public func updateNSView(_ thumbs: PDFThumbnailView, context: Context) {
-        if thumbs.pdfView !== state.pdfView {
-            thumbs.pdfView = state.pdfView
-        }
-        let want = scaledThumbnailSize(for: state.thumbnailScale)
-        if thumbs.thumbnailSize != want {
-            // Debounce: resizing thumbnails re-renders every page's thumbnail
-            // synchronously on the main thread. Rapid successive changes
-            // (slider drags, repeated +/- taps) would queue overlapping
-            // reloads and freeze the app with no recovery on large docs, so
-            // only the settled size is applied.
-            context.coordinator.scheduleThumbnailResize(thumbs, to: want)
-        }
-    }
-
-    public func makeCoordinator() -> ThumbnailCoordinator {
-        ThumbnailCoordinator()
-    }
-
-    /// Coalesces rapid `thumbnailSize` changes so only the latest settled
-    /// value hits `PDFThumbnailView` (which re-renders synchronously).
-    public final class ThumbnailCoordinator: NSObject {
-        private var pending: DispatchWorkItem?
-
-        func scheduleThumbnailResize(_ view: PDFThumbnailView, to size: NSSize) {
-            pending?.cancel()
-            let work = DispatchWorkItem { [weak view] in
-                guard let view else { return }
-                if view.thumbnailSize != size {
-                    view.thumbnailSize = size
+    public var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(0 ..< state.pageCount, id: \.self) { index in
+                        ThumbnailCell(state: state, pageIndex: index)
+                            .id(index)
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
             }
-            pending = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            .onAppear { scrollToCurrentPage(proxy) }
+            .onChange(of: state.currentPageIndex) { _, _ in
+                scrollToCurrentPage(proxy)
+            }
+            .onChange(of: state.fileURL) { _, _ in
+                scrollToCurrentPage(proxy)
+            }
         }
     }
 
-    private func scaledThumbnailSize(for scale: CGFloat) -> NSSize {
-        let clamped = min(5.0, max(0.5, scale))
-        return NSSize(width: 72 * clamped, height: 96 * clamped)
+    /// Keeps the current page visible, matching PDFThumbnailView's
+    /// follow-the-document behavior.
+    private func scrollToCurrentPage(_ proxy: ScrollViewProxy) {
+        guard state.pageCount > 0 else { return }
+        let index = min(max(0, state.currentPageIndex), state.pageCount - 1)
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(index, anchor: .center)
+            }
+        }
+    }
+}
+
+private struct ThumbnailCell: View {
+    @ObservedObject var state: PDFReaderState
+    let pageIndex: Int
+
+    /// Size thumbnails are rendered at. Lags `thumbnailSize` slightly so a
+    /// slider drag doesn't re-render every visible page at every step (the
+    /// same reason the old PDFThumbnailView bridge debounced resizes).
+    @State private var renderSize: NSSize = .zero
+    @State private var resizeTask: Task<Void, Never>?
+
+    private var isCurrent: Bool { state.currentPageIndex == pageIndex }
+
+    private var thumbnailSize: NSSize {
+        let scale = min(5.0, max(0.5, state.thumbnailScale))
+        return NSSize(width: 72 * scale, height: 96 * scale)
+    }
+
+    private var imageSize: NSSize {
+        renderSize == .zero ? thumbnailSize : renderSize
+    }
+
+    private var highlightColor: Color { state.pageHighlightSwiftUIColor }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            thumbnail
+                .frame(width: thumbnailSize.width, height: thumbnailSize.height)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isCurrent ? highlightColor.opacity(0.18) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(
+                            isCurrent ? highlightColor : Color.secondary.opacity(0.25),
+                            lineWidth: isCurrent ? 2.5 : 0.5
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Text("\(pageIndex + 1)")
+                .font(.caption2)
+                .fontWeight(isCurrent ? .semibold : .regular)
+                .foregroundStyle(isCurrent ? highlightColor : Color.secondary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            state.goToPage(index: pageIndex)
+        }
+        .help("Page \(pageIndex + 1)")
+        .accessibilityLabel("Page \(pageIndex + 1)")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .onAppear {
+            renderSize = thumbnailSize
+        }
+        .onChange(of: thumbnailSize) { _, newSize in
+            resizeTask?.cancel()
+            resizeTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled else { return }
+                renderSize = newSize
+            }
+        }
+        .onDisappear {
+            resizeTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let image = thumbnailImage {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+        } else {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(nsColor: .textBackgroundColor))
+                .overlay(
+                    Image(systemName: "doc")
+                        .foregroundStyle(.tertiary)
+                )
+        }
+    }
+
+    private var thumbnailImage: NSImage? {
+        guard let doc = state.document else { return nil }
+        return ThumbnailImageCache.image(
+            document: doc,
+            pageIndex: pageIndex,
+            fileURL: state.fileURL,
+            size: imageSize,
+            revision: state.thumbnailRevision
+        )
+    }
+}
+
+/// Small in-memory cache so scrolling and page changes don't re-render
+/// every visible thumbnail on each SwiftUI update pass.
+@MainActor
+private enum ThumbnailImageCache {
+    private static let cache = NSCache<NSString, NSImage>()
+
+    static func image(
+        document: PDFDocument,
+        pageIndex: Int,
+        fileURL: URL?,
+        size: NSSize,
+        revision: Int
+    ) -> NSImage? {
+        let key = "\(fileURL?.path ?? "untitled")#\(pageIndex)#\(Int(size.width))x\(Int(size.height))#\(revision)" as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+        guard let page = document.page(at: pageIndex) else { return nil }
+        let image = page.thumbnail(of: size, for: .mediaBox)
+        cache.setObject(image, forKey: key)
+        return image
     }
 }

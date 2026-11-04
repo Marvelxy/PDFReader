@@ -1,3 +1,4 @@
+import AppKit
 import PDFReaderKit
 import SwiftUI
 
@@ -142,9 +143,24 @@ public struct SidebarView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 40, alignment: .trailing)
                 .help("Thumbnail zoom — double-click slider to reset to 100%")
+
+            ColorPicker(
+                "Current page highlight",
+                selection: pageHighlightBinding,
+                supportsOpacity: false
+            )
+            .labelsHidden()
+            .help("Current page highlight color")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+    }
+
+    private var pageHighlightBinding: Binding<Color> {
+        Binding(
+            get: { state.pageHighlightSwiftUIColor },
+            set: { state.pageHighlightColor = NSColor($0) }
+        )
     }
 
     private var thumbnailsTab: some View {
