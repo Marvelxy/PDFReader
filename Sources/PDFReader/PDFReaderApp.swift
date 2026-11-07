@@ -10,6 +10,12 @@ enum SettingsWindow {
     static var open: (() -> Void)?
 }
 
+/// Print handler captured from the view so the File menu command (which
+/// can't read the environment) can print the active document.
+enum PrintAction {
+    static var run: (() -> Void)?
+}
+
 @main
 struct PDFReaderApp: App {
     var body: some Scene {
@@ -26,6 +32,10 @@ struct PDFReaderApp: App {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { SettingsWindow.open?() }
                     .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") { PrintAction.run?() }
+                    .keyboardShortcut("p", modifiers: .command)
             }
         }
 

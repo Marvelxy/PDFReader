@@ -16,6 +16,16 @@ func check(_ condition: Bool, _ label: String, failures: inout Int) {
     }
 }
 
+func colorsClose(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+    guard let a = lhs.usingColorSpace(.sRGB),
+          let b = rhs.usingColorSpace(.sRGB)
+    else { return lhs == rhs }
+    return abs(a.redComponent - b.redComponent) < 0.001
+        && abs(a.greenComponent - b.greenComponent) < 0.001
+        && abs(a.blueComponent - b.blueComponent) < 0.001
+        && abs(a.alphaComponent - b.alphaComponent) < 0.001
+}
+
 @MainActor
 func makeSamplePDF(pages: Int) throws -> URL {
     // Draw real text into a CG PDF context so PDFKit's findString works.
@@ -159,6 +169,33 @@ func run() async -> Int {
         "reading layouts map to distinct PDFKit display modes",
         failures: &failures
     )
+    // Reading progress: first page is 0%, last page is 100%.
+    do {
+        let progress = PDFReaderState()
+        check(progress.readingPercentage == 0, "reading percentage empty is 0", failures: &failures)
+        progress.pageCount = 4
+        progress.currentPageIndex = 0
+        check(progress.readingPercentage == 0, "reading percentage starts at 0", failures: &failures)
+        progress.currentPageIndex = 1
+        check(progress.readingPercentage == 33, "reading percentage interpolates", failures: &failures)
+        progress.currentPageIndex = 3
+        check(progress.readingPercentage == 100, "reading percentage reaches 100", failures: &failures)
+    }
+    // Page highlight: blue by default, persisted after a change.
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
+    do {
+        let hl = PDFReaderState()
+        let c = hl.pageHighlightColor.usingColorSpace(.sRGB)
+        check(
+            (c?.blueComponent ?? 0) > 0.8 && (c?.blueComponent ?? 0) > (c?.redComponent ?? 1),
+            "page highlight defaults to blue",
+            failures: &failures
+        )
+        hl.pageHighlightColor = NSColor(srgbRed: 0.9, green: 0.3, blue: 0.2, alpha: 1.0)
+        let reloaded = PDFReaderState().pageHighlightColor.usingColorSpace(.sRGB)
+        check(abs((reloaded?.redComponent ?? 0) - 0.9) < 0.001, "page highlight color persists", failures: &failures)
+    }
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.pageHighlightColor.v1")
 
     UserDefaults.standard.removeObject(forKey: "com.pdfreader.bookmarks.v1")
     let store = BookmarkStore()
@@ -168,6 +205,42 @@ func run() async -> Int {
     store.toggle(fileName: "a.pdf", pageIndex: 2)
     check(!store.isBookmarked(fileName: "a.pdf", pageIndex: 2), "bookmark toggle removes", failures: &failures)
     UserDefaults.standard.removeObject(forKey: "com.pdfreader.bookmarks.v1")
+
+    // Library shelves: opened books default to Currently Reading, rows
+    // expose progress, and moving a book persists its section.
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+    do {
+        let library = LibraryStore()
+        let bookA = URL(fileURLWithPath: "/tmp/verify-library-a.pdf")
+        let bookB = URL(fileURLWithPath: "/tmp/verify-library-b.pdf")
+        library.record(url: bookA, progress: 0.25)
+        library.record(url: bookB, progress: 1.0)
+        check(library.books(in: .currentlyReading).count == 2, "library adds opened books", failures: &failures)
+        check(
+            library.books(in: .currentlyReading).first { $0.url == bookA }?.percentage == 25,
+            "library shows reading percentage",
+            failures: &failures
+        )
+        library.move(bookA, to: .wantToRead)
+        library.move(bookB, to: .finished)
+        check(
+            library.books(in: .wantToRead).contains { $0.url == bookA },
+            "library moves book to want to read",
+            failures: &failures
+        )
+        check(
+            library.books(in: .finished).contains { $0.url == bookB },
+            "library moves book to finished",
+            failures: &failures
+        )
+        let reloaded = LibraryStore()
+        check(
+            reloaded.books(in: .wantToRead).first?.percentage == 25,
+            "library persists section and progress",
+            failures: &failures
+        )
+    }
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
 
     let bad = PDFReaderState()
     check(!bad.open(url: URL(fileURLWithPath: "/nonexistent/missing.pdf")), "invalid URL fails gracefully", failures: &failures)
@@ -316,11 +389,66 @@ func run() async -> Int {
             print("FAIL: no hit available for undo checks")
             failures += 1
         }
+        // Recoloring an existing annotation is undoable and persists on save.
+        if let row = state.annotationRows.first {
+            let before = row.annotation.color
+            state.setAnnotationColor(HighlightColor.blue, for: row)
+            check(
+                colorsClose(row.annotation.color, HighlightColor.blue.nsColor),
+                "recolor changes annotation color",
+                failures: &failures
+            )
+            state.undo()
+            check(colorsClose(row.annotation.color, before), "undo restores annotation color", failures: &failures)
+            state.redo()
+            check(
+                colorsClose(row.annotation.color, HighlightColor.blue.nsColor),
+                "redo reapplies annotation color",
+                failures: &failures
+            )
+        } else {
+            print("FAIL: no annotation row to recolor")
+            failures += 1
+        }
+        // Click-to-recolor: hit-testing an editable annotation opens the
+        // editor anchored at it; clicking the same annotation again is
+        // deduped so the popover does not thrash.
+        panel.frame = NSRect(x: 0, y: 0, width: 612, height: 792)
+        panel.autoScales = true
+        panel.layoutSubtreeIfNeeded()
+        if let row = state.annotationRows.first(where: { PDFReaderState.isEditableAnnotation($0.annotation) }) {
+            state.dismissAnnotationColorEditor()
+            state.handleAnnotationClick(row.annotation, in: panel)
+            if let target = state.annotationColorTarget {
+                check(target.annotation === row.annotation, "click sets annotation color target", failures: &failures)
+                check(target.pageIndex == row.pageIndex, "click target page index", failures: &failures)
+                check(target.anchor.x.isFinite && target.anchor.y.isFinite, "click anchor is finite", failures: &failures)
+            } else {
+                print("FAIL: click did not set annotation color target")
+                failures += 1
+            }
+            let targetID = state.annotationColorTarget?.id
+            state.handleAnnotationClick(row.annotation, in: panel)
+            check(state.annotationColorTarget?.id == targetID, "same annotation click is deduped", failures: &failures)
+            state.dismissAnnotationColorEditor()
+            check(state.annotationColorTarget == nil, "dismiss clears annotation color target", failures: &failures)
+        } else {
+            print("FAIL: no editable annotation for click target")
+            failures += 1
+        }
+        // Printing prepares a job when a document is open and nothing otherwise.
+        check(state.makePrintOperation() != nil, "print operation is available", failures: &failures)
+        check(PDFReaderState().makePrintOperation() == nil, "print without a document yields no operation", failures: &failures)
         // Save writes annotations back into the opened file.
         check(state.save(), "save writes back to file", failures: &failures)
         let reopenedFile = PDFReaderState()
         check(reopenedFile.open(url: url), "reopens saved file", failures: &failures)
         check(!reopenedFile.annotationRows.isEmpty, "saved annotations persist on disk", failures: &failures)
+        check(
+            reopenedFile.annotationRows.contains { colorsClose($0.annotation.color, HighlightColor.blue.nsColor) },
+            "saved annotation color persists",
+            failures: &failures
+        )
         check(!PDFReaderState().save(), "save with no document fails gracefully", failures: &failures)
         state.clearSearch()
         check(state.searchHits.isEmpty, "clear search empties hits", failures: &failures)

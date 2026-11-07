@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import XCTest
 
 @testable import PDFReaderKit
@@ -75,6 +76,92 @@ final class BookmarkAndPaletteTests: XCTestCase {
     func testReadingLayoutsMapToDistinctDisplayModes() {
         let modes = ReadingLayout.allCases.map { $0.pdfDisplayMode.rawValue }
         XCTAssertEqual(Set(modes).count, ReadingLayout.allCases.count)
+    }
+
+    func testLibrarySectionsProgressAndPersistence() {
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+        let store = LibraryStore()
+        XCTAssertTrue(store.books.isEmpty)
+
+        let bookA = URL(fileURLWithPath: "/tmp/library-a.pdf")
+        let bookB = URL(fileURLWithPath: "/tmp/library-b.pdf")
+        store.record(url: bookA, progress: 0.25)
+        store.record(url: bookB, progress: 1.0)
+
+        XCTAssertEqual(store.books(in: .currentlyReading).count, 2)
+        XCTAssertEqual(
+            store.books(in: .currentlyReading).first { $0.url == bookA }?.percentage,
+            25
+        )
+
+        store.move(bookA, to: .wantToRead)
+        store.move(bookB, to: .finished)
+        XCTAssertTrue(store.books(in: .wantToRead).contains { $0.url == bookA })
+        XCTAssertTrue(store.books(in: .finished).contains { $0.url == bookB })
+        XCTAssertTrue(store.books(in: .currentlyReading).isEmpty)
+
+        // A fresh instance reads the persisted shelves + progress.
+        let reloaded = LibraryStore()
+        XCTAssertEqual(reloaded.books(in: .wantToRead).first?.percentage, 25)
+        XCTAssertEqual(reloaded.books(in: .finished).first?.percentage, 100)
+
+        // Reading an existing book updates progress without moving shelves.
+        reloaded.record(url: bookA, progress: 0.5)
+        XCTAssertEqual(reloaded.books(in: .wantToRead).first?.percentage, 50)
+
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+    }
+
+    @MainActor
+    func testAnnotationColorCanBeEditedWithUndo() {
+        let image = NSImage(size: NSSize(width: 100, height: 100), flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            return true
+        }
+        guard let page = PDFPage(image: image) else {
+            XCTFail("could not create a PDF page")
+            return
+        }
+        let annotation = PDFAnnotation(
+            bounds: NSRect(x: 10, y: 10, width: 40, height: 20),
+            forType: .highlight,
+            withProperties: nil
+        )
+        annotation.color = NSColor.yellow
+        page.addAnnotation(annotation)
+
+        let doc = PDFDocument()
+        doc.insert(page, at: 0)
+        let state = PDFReaderState()
+        state.document = doc
+        state.pageCount = 1
+        state.refreshAnnotations()
+
+        guard let row = state.annotationRows.first else {
+            XCTFail("annotation row missing")
+            return
+        }
+        state.setAnnotationColor(NSColor.red, for: row)
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.red))
+        XCTAssertTrue(state.canUndo)
+
+        state.undo()
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.yellow))
+        XCTAssertTrue(state.canRedo)
+
+        state.redo()
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.red))
+    }
+
+    private func colorsClose(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let a = lhs.usingColorSpace(.sRGB),
+              let b = rhs.usingColorSpace(.sRGB)
+        else { return lhs == rhs }
+        return abs(a.redComponent - b.redComponent) < 0.001
+            && abs(a.greenComponent - b.greenComponent) < 0.001
+            && abs(a.blueComponent - b.blueComponent) < 0.001
+            && abs(a.alphaComponent - b.alphaComponent) < 0.001
     }
 
     func testRecentFilesRecordDedupeCapAndPersist() {

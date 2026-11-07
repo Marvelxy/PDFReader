@@ -9,6 +9,11 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
 
 - **Basic viewing** — open PDFs, continuous / single / two-up layouts,
   zoom in/out + auto-fit, page navigation, thumbnail strip.
+- **Reading progress** — the status bar shows the current page plus the
+  percentage of the document read, updated as you scroll.
+- **Customizable page highlight** — the current page in the Pages sidebar
+  is highlighted in blue by default; pick any color from the swatch in the
+  thumbnail toolbar (persisted).
 - **Search + outline** — full-text search with match list + highlight,
   table-of-contents navigation, per-file bookmarks (persisted).
 - **Annotations** — highlight, underline, strikethrough, sticky notes with
@@ -19,9 +24,17 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
   Highlights apply automatically once a text selection settles, and the
   color advances to the next rotation color after every highlight.
   **Undo / redo** for annotation changes (⌘Z / ⇧⌘Z).
-  Annotation list inspector with jump-to + delete.
+  Annotation list inspector with jump-to, **recolor existing highlights**,
+  and delete.
+- **Library** — a full-page library (⌘L) groups opened books into
+  **Currently reading**, **Want to read** and **Finished**. Every book shows
+  a first-page cover and title plus how much you've read; switch between
+  list and grid views. Move books between shelves with the row menu,
+  context menu, or drag and drop. Shelves, layout, and progress persist.
 - **Saving** — **Save** (⌘S) writes annotations back into the opened PDF;
   **Save Copy** exports an annotated duplicate.
+- **Printing** — **File → Print…** (⌘P) prints through the system print
+  panel, so you can pick page ranges, scale, and include annotations.
 - **Recents** — the Open menu keeps an Open Recent list (with Clear Menu);
   the welcome screen shows your recent files with relative dates. Missing
   files are reported and dropped on open.
@@ -106,6 +119,12 @@ scripts/make-app.sh [debug|release]
 open .build/app/PDFReader.app
 ```
 
+> **Important:** `swift build` only updates `.build/debug/PDFReader`; it
+> does **not** refresh an existing `.build/app/PDFReader.app`. After code
+> changes, rerun `scripts/make-app.sh` and relaunch the app — otherwise
+> you'll keep running the old build (and won't see new menu items,
+> toolbar buttons, etc.).
+
 ## Verification
 
 ```sh
@@ -128,10 +147,12 @@ Sources/PDFReader/
     PDFReaderState.swift  # document state, search, outline, annotations
     HighlightColor.swift  # switchable markup palette + tools
     BookmarkStore.swift   # persisted per-file bookmarks
+    LibraryStore.swift    # persisted reading shelves + progress
   Views/
     ContentView.swift     # split view, toolbar, status bar
     PDFKitView.swift      # PDFView + PDFThumbnailView bridges
     SidebarView.swift     # pages / contents / search / bookmarks / notes
+    LibraryView.swift     # library page (shelves + progress)
     AboutView.swift       # App menu → About
     SettingsView.swift    # App menu → Settings… (⌘,)
     Services/UpdateChecker.swift  # Help → Check for Updates…

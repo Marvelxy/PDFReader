@@ -7,9 +7,11 @@ public struct ContentView: View {
     @StateObject private var state = PDFReaderState()
     @StateObject private var bookmarks = BookmarkStore()
     @StateObject private var recents = RecentFilesStore()
+    @StateObject private var library = LibraryStore()
     @State private var sidebarTab: SidebarTab = .outline
     @Environment(\.openWindow) private var openWindow
     @State private var showingSidebar = true
+    @State private var showingLibrary = false
     @State private var sidebarWidth: CGFloat = 280
     @State private var hoveringDivider = false
     @State private var dividerDragAnchor: CGFloat?
@@ -20,25 +22,48 @@ public struct ContentView: View {
 
     public var body: some View {
         HStack(spacing: 0) {
-            if showingSidebar {
+            if showingSidebar && !showingLibrary {
                 SidebarView(state: state, bookmarks: bookmarks, tab: $sidebarTab)
                     .frame(width: sidebarWidth)
                 sidebarDivider
             }
             VStack(spacing: 0) {
                 // Tab bar — shows open PDF tabs like Adobe Reader
-                if !state.tabURLs.isEmpty {
+                if !showingLibrary, !state.tabURLs.isEmpty {
                     TabBar(state: state)
                         .frame(height: 32)
                 }
-                if state.document == nil {
+                if showingLibrary {
+                    LibraryView(
+                        state: state,
+                        library: library,
+                        canReturnToReading: state.document != nil,
+                        onOpen: { url in open(url: url) },
+                        onOpenDocument: openDocument,
+                        onReturnToReading: { showingLibrary = false }
+                    )
+                } else if state.document == nil {
                     welcomeView
                 } else {
-                    PDFKitView(state: state)
-                        .colorInvertIfActive(state.usesDarkPages)
-                        .background(state.usesDarkPages ? Color.black : state.appTheme.windowBackground)
+                    GeometryReader { geo in
+                        PDFKitView(state: state)
+                            .colorInvertIfActive(state.usesDarkPages)
+                            .background(state.usesDarkPages ? Color.black : state.appTheme.windowBackground)
+                            .popover(
+                                item: Binding(
+                                    get: { state.annotationColorTarget },
+                                    set: { state.annotationColorTarget = $0 }
+                                ),
+                                attachmentAnchor: .point(annotationColorAnchor(in: geo.size)),
+                                arrowEdge: .bottom
+                            ) { target in
+                                AnnotationColorPopover(state: state, target: target)
+                            }
+                    }
                 }
-                statusBar
+                if !showingLibrary {
+                    statusBar
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
@@ -72,6 +97,15 @@ public struct ContentView: View {
                         Label("Sidebar", systemImage: "sidebar.leading")
                     }
                     .help("Toggle sidebar")
+                    .disabled(showingLibrary)
+
+                    Button {
+                        showingLibrary.toggle()
+                    } label: {
+                        Label("Library", systemImage: "books.vertical")
+                    }
+                    .help("Library (⌘L)")
+                    .keyboardShortcut("l", modifiers: .command)
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -151,6 +185,14 @@ public struct ContentView: View {
                     .help("Presentation / full screen")
 
                     Button {
+                        state.printDocument()
+                    } label: {
+                        Label("Print", systemImage: "printer")
+                    }
+                    .help("Print pages (⌘P)")
+                    .disabled(state.document == nil)
+
+                    Button {
                         saveInPlace()
                     } label: {
                         Label("Save", systemImage: "square.and.arrow.down")
@@ -178,14 +220,25 @@ public struct ContentView: View {
         .onChange(of: state.highlightColor) { _, _ in
             state.applyToCurrentSelectionIfPresent()
         }
+        .onChange(of: state.fileURL) { _, _ in
+            syncLibrary()
+        }
+        .onChange(of: state.currentPageIndex) { _, _ in
+            syncLibrary()
+        }
+        .onChange(of: state.pageCount) { _, _ in
+            syncLibrary()
+        }
         .preferredColorScheme(state.appTheme.preferredColorScheme)
         .tint(state.appTheme.accent)
         .frame(minWidth: 900, minHeight: 600)
         .onAppear {
             AboutWindow.open = { openWindow(id: "about") }
             SettingsWindow.open = { openWindow(id: "settings") }
+            PrintAction.run = { state.printDocument() }
             // Bring back the tabs and pages that were open at last quit.
             state.restoreSession()
+            syncLibrary()
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`
             if let sample = ProcessInfo.processInfo.environment["PDFREADER_SAMPLE"] {
                 let url = URL(fileURLWithPath: sample)
@@ -198,6 +251,18 @@ public struct ContentView: View {
     }
 
     // MARK: - Subviews
+
+    /// Converts the clicked annotation's PDFView-space anchor (bottom-left
+    /// origin) into a unit point for the popover attachment (top-left origin).
+    private func annotationColorAnchor(in size: CGSize) -> UnitPoint {
+        guard let target = state.annotationColorTarget,
+              size.width > 0, size.height > 0
+        else { return .center }
+        return UnitPoint(
+            x: min(max(target.anchor.x / size.width, 0), 1),
+            y: min(max(1 - target.anchor.y / size.height, 0), 1)
+        )
+    }
 
     /// Explicit draggable divider between sidebar and detail: a neutral
     /// gray strip (11pt hit zone) with resize cursor, drag-to-resize
@@ -297,6 +362,10 @@ public struct ContentView: View {
                 Text("Page \(state.currentPageIndex + 1) of \(state.pageCount)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("\(state.readingPercentage)% read")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Percentage of the document read")
                 Text("\(Int(state.scaleFactor * 100))%")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -610,9 +679,18 @@ public struct ContentView: View {
     private func open(url: URL) -> Bool {
         let ok = state.open(url: url)
         if ok {
+            showingLibrary = false
             recents.record(url)
+            syncLibrary()
         }
         return ok
+    }
+
+    /// Mirrors the active document's reading position into the Library so
+    /// shelf rows show an up-to-date percentage.
+    private func syncLibrary() {
+        guard state.document != nil, let url = state.fileURL else { return }
+        library.record(url: url, progress: state.readingProgress)
     }
 
     private func openRecent(_ item: RecentFile) {
@@ -1076,5 +1154,54 @@ private struct TabFrameKey: PreferenceKey {
     static var defaultValue: [Int: CGRect] = [:]
     static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
         value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// Click-to-recolor popover shown when a markup annotation is clicked in
+/// the viewer. Presets mirror the Notes inspector; custom colors route
+/// through the same `setAnnotationColor` undo path.
+private struct AnnotationColorPopover: View {
+    @ObservedObject var state: PDFReaderState
+    let target: AnnotationColorTarget
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Highlight color")
+                .font(.headline)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(24), spacing: 8), count: 5),
+                spacing: 8
+            ) {
+                ForEach(HighlightColor.presets) { color in
+                    Circle()
+                        .fill(color.swiftUIColor)
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Circle().strokeBorder(
+                                state.annotationColorMatches(target.annotation, color)
+                                    ? Color.accentColor
+                                    : Color.secondary.opacity(0.35),
+                                lineWidth: state.annotationColorMatches(target.annotation, color) ? 2 : 0.5
+                            )
+                        )
+                        .contentShape(Circle())
+                        .onTapGesture {
+                            state.setAnnotationColor(color, for: target.annotation)
+                        }
+                        .help(color.displayName)
+                }
+            }
+            Divider()
+            ColorPicker(
+                "Custom…",
+                selection: Binding(
+                    get: { Color(nsColor: target.annotation.color) },
+                    set: { state.setAnnotationColor(NSColor($0), for: target.annotation) }
+                ),
+                supportsOpacity: false
+            )
+        }
+        .padding()
+        .frame(minWidth: 210)
     }
 }

@@ -36,6 +36,15 @@ public struct PDFAnnotationRow: Identifiable {
     public var contents: String { annotation.contents ?? "" }
 }
 
+/// Annotation currently being recolored by clicking it in the viewer.
+/// `anchor` is in `PDFView` coordinates (bottom-left origin).
+public struct AnnotationColorTarget: Identifiable {
+    public let id = UUID()
+    public let annotation: PDFAnnotation
+    public let pageIndex: Int
+    public let anchor: CGPoint
+}
+
 /// Reading layout options exposed in the toolbar.
 public enum ReadingLayout: String, CaseIterable, Identifiable {
     case singleContinuous
@@ -107,6 +116,12 @@ public final class PDFReaderState: ObservableObject {
 
     @Published public var outlineNodes: [PDFOutlineNode] = []
     @Published public var annotationRows: [PDFAnnotationRow] = []
+    /// Non-nil while the click-to-recolor popover is showing.
+    @Published public var annotationColorTarget: AnnotationColorTarget?
+
+    /// Bumped whenever page content changes (annotations added/removed)
+    /// so thumbnail caches can invalidate.
+    @Published public var thumbnailRevision: Int = 0
 
     @Published public var annotationMode: AnnotationMode = .select
     @Published public var highlightColor: HighlightColor = .yellow {
@@ -127,6 +142,24 @@ public final class PDFReaderState: ObservableObject {
         }
     }
 
+    /// Color used to highlight the current page in the Pages sidebar.
+    /// Defaults to blue and is persisted across relaunches.
+    @Published public var pageHighlightColor: NSColor = .systemBlue {
+        didSet {
+            if pageHighlightColor.colorSpace != .sRGB,
+               let converted = pageHighlightColor.usingColorSpace(.sRGB)
+            {
+                pageHighlightColor = converted
+            }
+            savePageHighlightColor()
+        }
+    }
+
+    /// SwiftUI bridge for `pageHighlightColor`.
+    public var pageHighlightSwiftUIColor: Color {
+        Color(pageHighlightColor)
+    }
+
     /// User-selected shortlist cycled by "Next color", in order.
     @Published public var favoriteColors: [HighlightColor] = [.yellow, .green, .pink] {
         didSet { saveHighlightPrefs() }
@@ -139,6 +172,22 @@ public final class PDFReaderState: ObservableObject {
 
     public var resolvedHighlightColor: Color {
         highlightColor == .custom ? Color(customHighlightColor) : highlightColor.swiftUIColor
+    }
+
+    // MARK: - Reading progress
+
+    /// Fraction of the document read, 0...1. The first page reads as 0%
+    /// and the last page as 100%, interpolating linearly in between.
+    public var readingProgress: Double {
+        guard pageCount > 0 else { return 0 }
+        guard pageCount > 1 else { return 1 }
+        let page = min(max(currentPageIndex, 0), pageCount - 1)
+        return Double(page) / Double(pageCount - 1)
+    }
+
+    /// Reading progress as a whole percentage (0...100).
+    public var readingPercentage: Int {
+        Int((readingProgress * 100).rounded())
     }
 
     @Published public var statusMessage: String = "Open a PDF to get started."
@@ -272,6 +321,8 @@ public final class PDFReaderState: ObservableObject {
         case added(pairs: [(page: PDFPage, annotation: PDFAnnotation)])
         /// An annotation we removed (undo re-adds it, redo removes it).
         case removed(page: PDFPage, annotation: PDFAnnotation)
+        /// An annotation whose color we changed (undo restores, redo reapplies).
+        case recolored(annotation: PDFAnnotation, oldColor: NSColor, newColor: NSColor)
     }
 
     private var undoStack: [AnnotationChange] = []
@@ -310,6 +361,7 @@ public final class PDFReaderState: ObservableObject {
 
     private static let highlightColorKey = "com.pdfreader.highlightColor.v1"
     private static let customColorKey = "com.pdfreader.highlightCustomColor.v1"
+    private static let pageHighlightColorKey = "com.pdfreader.pageHighlightColor.v1"
     private static let favoritesKey = "com.pdfreader.highlightFavorites.v1"
     private static let themeKey = "com.pdfreader.appTheme.v1"
     private static let thumbnailScaleKey = "com.pdfreader.thumbnailScale.v1"
@@ -341,6 +393,16 @@ public final class PDFReaderState: ObservableObject {
         }
     }
 
+    private func savePageHighlightColor() {
+        guard !loadingPrefs else { return }
+        if let srgb = pageHighlightColor.usingColorSpace(.sRGB) {
+            UserDefaults.standard.set(
+                "\(srgb.redComponent) \(srgb.greenComponent) \(srgb.blueComponent)",
+                forKey: Self.pageHighlightColorKey
+            )
+        }
+    }
+
     private func loadHighlightPrefs() {
         loadingPrefs = true
         defer { loadingPrefs = false }
@@ -353,6 +415,17 @@ public final class PDFReaderState: ObservableObject {
             let parts = str.split(separator: " ").compactMap { Double(String($0)) }
             if parts.count == 3 {
                 customHighlightColor = NSColor(
+                    srgbRed: CGFloat(parts[0]),
+                    green: CGFloat(parts[1]),
+                    blue: CGFloat(parts[2]),
+                    alpha: 1.0
+                )
+            }
+        }
+        if let str = UserDefaults.standard.string(forKey: Self.pageHighlightColorKey) {
+            let parts = str.split(separator: " ").compactMap { Double(String($0)) }
+            if parts.count == 3 {
+                pageHighlightColor = NSColor(
                     srgbRed: CGFloat(parts[0]),
                     green: CGFloat(parts[1]),
                     blue: CGFloat(parts[2]),
@@ -786,6 +859,7 @@ public final class PDFReaderState: ObservableObject {
     // MARK: - Annotations
 
     public func refreshAnnotations() {
+        thumbnailRevision &+= 1
         guard let doc = document else {
             annotationRows = []
             return
@@ -937,6 +1011,105 @@ public final class PDFReaderState: ObservableObject {
         refreshAnnotations()
     }
 
+    /// Recolors an existing annotation. Used by the Notes inspector so a
+    /// highlight can be edited after it was applied.
+    public func setAnnotationColor(_ color: NSColor, for row: PDFAnnotationRow) {
+        setAnnotationColor(color, for: row.annotation)
+    }
+
+    /// Convenience for palette colors; `.custom` resolves through
+    /// `customHighlightColor`.
+    public func setAnnotationColor(_ color: HighlightColor, for row: PDFAnnotationRow) {
+        setAnnotationColor(color, for: row.annotation)
+    }
+
+    /// Recolors an annotation directly (used by click-to-recolor).
+    public func setAnnotationColor(_ color: NSColor, for annotation: PDFAnnotation) {
+        let oldColor = annotation.color
+        guard !Self.colorsMatch(oldColor, color) else { return }
+        annotation.color = color
+        pdfView?.needsDisplay = true
+        undoStack.append(
+            .recolored(annotation: annotation, oldColor: oldColor, newColor: color)
+        )
+        redoStack.removeAll()
+        refreshAnnotations()
+        statusMessage = "Changed annotation color."
+    }
+
+    /// Convenience for palette colors; `.custom` resolves through
+    /// `customHighlightColor`.
+    public func setAnnotationColor(_ color: HighlightColor, for annotation: PDFAnnotation) {
+        setAnnotationColor(color == .custom ? customHighlightColor : color.nsColor, for: annotation)
+    }
+
+    public func annotationColorMatches(_ annotation: PDFAnnotation, _ color: HighlightColor) -> Bool {
+        Self.colorsMatch(
+            annotation.color,
+            color == .custom ? customHighlightColor : color.nsColor
+        )
+    }
+
+    /// Annotation types that can be recolored by clicking them in the viewer.
+    /// PDFKit reports subtypes as `/Highlight` but `PDFAnnotation.type` as
+    /// `Highlight`, so normalize the leading slash before matching.
+    private static let editableAnnotationTypes: Set<String> = [
+        PDFAnnotationSubtype.highlight.rawValue,
+        PDFAnnotationSubtype.underline.rawValue,
+        PDFAnnotationSubtype.strikeOut.rawValue,
+        PDFAnnotationSubtype.text.rawValue,
+        PDFAnnotationSubtype.freeText.rawValue,
+    ].map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+        .reduce(into: Set<String>()) { $0.insert($1) }
+
+    public static func isEditableAnnotation(_ annotation: PDFAnnotation) -> Bool {
+        let type = annotation.type ?? ""
+        let normalized = type.hasPrefix("/") ? String(type.dropFirst()) : type
+        return editableAnnotationTypes.contains(normalized)
+    }
+
+    /// Handles a click on an annotation in the viewer by opening the color
+    /// editor anchored at that annotation.
+    public func handleAnnotationClick(_ annotation: PDFAnnotation, in view: PDFView) {
+        guard let doc = document,
+              Self.isEditableAnnotation(annotation)
+        else { return }
+        if let current = annotationColorTarget, current.annotation === annotation {
+            return
+        }
+        let page: PDFPage?
+        if let annotationPage = annotation.page {
+            page = annotationPage
+        } else {
+            page = (0 ..< doc.pageCount)
+                .compactMap { doc.page(at: $0) }
+                .first { $0.annotations.contains { $0 === annotation } }
+        }
+        guard let page else { return }
+        let pageIndex = doc.index(for: page)
+        guard pageIndex >= 0, pageIndex < doc.pageCount else { return }
+        let boundsInView = view.convert(annotation.bounds, from: page)
+        annotationColorTarget = AnnotationColorTarget(
+            annotation: annotation,
+            pageIndex: pageIndex,
+            anchor: CGPoint(x: boundsInView.midX, y: boundsInView.midY)
+        )
+    }
+
+    public func dismissAnnotationColorEditor() {
+        annotationColorTarget = nil
+    }
+
+    private static func colorsMatch(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let a = lhs.usingColorSpace(.sRGB),
+              let b = rhs.usingColorSpace(.sRGB)
+        else { return lhs == rhs }
+        return abs(a.redComponent - b.redComponent) < 0.001
+            && abs(a.greenComponent - b.greenComponent) < 0.001
+            && abs(a.blueComponent - b.blueComponent) < 0.001
+            && abs(a.alphaComponent - b.alphaComponent) < 0.001
+    }
+
     public func undo() {
         guard let change = undoStack.popLast() else { return }
         applyInverse(change)
@@ -961,6 +1134,9 @@ public final class PDFReaderState: ObservableObject {
             }
         case .removed(let page, let annotation):
             page.addAnnotation(annotation)
+        case .recolored(let annotation, let oldColor, _):
+            annotation.color = oldColor
+            pdfView?.needsDisplay = true
         }
     }
 
@@ -972,6 +1148,9 @@ public final class PDFReaderState: ObservableObject {
             }
         case .removed(let page, let annotation):
             page.removeAnnotation(annotation)
+        case .recolored(let annotation, _, let newColor):
+            annotation.color = newColor
+            pdfView?.needsDisplay = true
         }
     }
 
@@ -979,6 +1158,43 @@ public final class PDFReaderState: ObservableObject {
         goToPage(index: row.pageIndex, viaView: false)
         if let doc = document, let page = doc.page(at: row.pageIndex) {
             pdfView?.go(to: page.bounds(for: .mediaBox), on: page)
+        }
+    }
+
+    // MARK: - Printing
+
+    /// Builds a print operation for the current document, or `nil` when no
+    /// document is open. Exposed separately so callers can validate a job
+    /// without showing the print panel.
+    public func makePrintOperation(printInfo: NSPrintInfo = .shared) -> NSPrintOperation? {
+        guard let doc = document else { return nil }
+        let operation = doc.printOperation(
+            for: printInfo,
+            scalingMode: .pageScaleDownToFit,
+            autoRotate: true
+        )
+        operation?.showsPrintPanel = true
+        operation?.showsProgressPanel = true
+        return operation
+    }
+
+    /// Opens the system print panel for the current document. The panel
+    /// handles page ranges; pages are scaled down to fit the paper and
+    /// auto-rotated, and annotations are included.
+    public func printDocument() {
+        guard let doc = document else {
+            statusMessage = "Nothing to print."
+            return
+        }
+        guard let operation = makePrintOperation() else {
+            statusMessage = "Could not prepare the print job."
+            return
+        }
+        let ok = operation.run()
+        if ok {
+            statusMessage = "Printed \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s") from \(fileName)."
+        } else {
+            statusMessage = "Print canceled."
         }
     }
 
