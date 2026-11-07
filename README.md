@@ -28,6 +28,8 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
   and delete.
 - **Saving** — **Save** (⌘S) writes annotations back into the opened PDF;
   **Save Copy** exports an annotated duplicate.
+- **Printing** — **File → Print…** (⌘P) prints through the system print
+  panel, so you can pick page ranges, scale, and include annotations.
 - **Recents** — the Open menu keeps an Open Recent list (with Clear Menu);
   the welcome screen shows your recent files with relative dates. Missing
   files are reported and dropped on open.
@@ -111,6 +113,12 @@ binary is stuck with the arrow pointer):
 scripts/make-app.sh [debug|release]
 open .build/app/PDFReader.app
 ```
+
+> **Important:** `swift build` only updates `.build/debug/PDFReader`; it
+> does **not** refresh an existing `.build/app/PDFReader.app`. After code
+> changes, rerun `scripts/make-app.sh` and relaunch the app — otherwise
+> you'll keep running the old build (and won't see new menu items,
+> toolbar buttons, etc.).
 
 ## Verification
 

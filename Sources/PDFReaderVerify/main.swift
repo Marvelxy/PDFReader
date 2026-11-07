@@ -400,6 +400,9 @@ func run() async -> Int {
             print("FAIL: no editable annotation for click target")
             failures += 1
         }
+        // Printing prepares a job when a document is open and nothing otherwise.
+        check(state.makePrintOperation() != nil, "print operation is available", failures: &failures)
+        check(PDFReaderState().makePrintOperation() == nil, "print without a document yields no operation", failures: &failures)
         // Save writes annotations back into the opened file.
         check(state.save(), "save writes back to file", failures: &failures)
         let reopenedFile = PDFReaderState()

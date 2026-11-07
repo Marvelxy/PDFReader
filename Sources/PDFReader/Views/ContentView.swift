@@ -163,6 +163,14 @@ public struct ContentView: View {
                     .help("Presentation / full screen")
 
                     Button {
+                        state.printDocument()
+                    } label: {
+                        Label("Print", systemImage: "printer")
+                    }
+                    .help("Print pages (⌘P)")
+                    .disabled(state.document == nil)
+
+                    Button {
                         saveInPlace()
                     } label: {
                         Label("Save", systemImage: "square.and.arrow.down")
@@ -196,6 +204,7 @@ public struct ContentView: View {
         .onAppear {
             AboutWindow.open = { openWindow(id: "about") }
             SettingsWindow.open = { openWindow(id: "settings") }
+            PrintAction.run = { state.printDocument() }
             // Bring back the tabs and pages that were open at last quit.
             state.restoreSession()
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`

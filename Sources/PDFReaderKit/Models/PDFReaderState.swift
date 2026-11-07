@@ -1161,6 +1161,43 @@ public final class PDFReaderState: ObservableObject {
         }
     }
 
+    // MARK: - Printing
+
+    /// Builds a print operation for the current document, or `nil` when no
+    /// document is open. Exposed separately so callers can validate a job
+    /// without showing the print panel.
+    public func makePrintOperation(printInfo: NSPrintInfo = .shared) -> NSPrintOperation? {
+        guard let doc = document else { return nil }
+        let operation = doc.printOperation(
+            for: printInfo,
+            scalingMode: .pageScaleDownToFit,
+            autoRotate: true
+        )
+        operation?.showsPrintPanel = true
+        operation?.showsProgressPanel = true
+        return operation
+    }
+
+    /// Opens the system print panel for the current document. The panel
+    /// handles page ranges; pages are scaled down to fit the paper and
+    /// auto-rotated, and annotations are included.
+    public func printDocument() {
+        guard let doc = document else {
+            statusMessage = "Nothing to print."
+            return
+        }
+        guard let operation = makePrintOperation() else {
+            statusMessage = "Could not prepare the print job."
+            return
+        }
+        let ok = operation.run()
+        if ok {
+            statusMessage = "Printed \(doc.pageCount) page\(doc.pageCount == 1 ? "" : "s") from \(fileName)."
+        } else {
+            statusMessage = "Print canceled."
+        }
+    }
+
     // MARK: - Saving
 
     /// Writes annotations back into the opened file.
