@@ -160,16 +160,21 @@ Sources/PDFReader/
 
 ## Releasing
 
-Releases are cut from version tags:
+Releases are automatic when changes merge to `main` (or `master`). CI runs
+the build, verification checks and tests, bumps the patch version from the
+latest `v*` tag (for example `v1.3.3` → `v1.3.4`), creates and pushes the
+tag, builds the universal binary + DMG, and publishes the GitHub release.
+
+For a major or minor release, push the tag yourself; CI builds and
+publishes that exact tag:
 
 ```sh
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-CI builds the universal binary + DMG, stamps the app version from the tag
-(`CFBundleShortVersionString`), and creates the GitHub release. Don't
-create the GitHub release manually first — `gh release create` in CI
-fails if one with the same tag name already exists.
+If a release already exists for the tag, CI re-uploads the DMG instead of
+failing, so re-running a workflow is safe. Re-runs reuse the tag already
+pointing at the merge commit instead of bumping the version again.
 
 If `git push` fails mid-upload of the icon resources with
 `send-pack: unexpected disconnect`, raise the HTTP post buffer:
