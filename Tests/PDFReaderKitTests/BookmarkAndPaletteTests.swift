@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import XCTest
 
 @testable import PDFReaderKit
@@ -75,6 +76,58 @@ final class BookmarkAndPaletteTests: XCTestCase {
     func testReadingLayoutsMapToDistinctDisplayModes() {
         let modes = ReadingLayout.allCases.map { $0.pdfDisplayMode.rawValue }
         XCTAssertEqual(Set(modes).count, ReadingLayout.allCases.count)
+    }
+
+    @MainActor
+    func testAnnotationColorCanBeEditedWithUndo() {
+        let image = NSImage(size: NSSize(width: 100, height: 100), flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            return true
+        }
+        guard let page = PDFPage(image: image) else {
+            XCTFail("could not create a PDF page")
+            return
+        }
+        let annotation = PDFAnnotation(
+            bounds: NSRect(x: 10, y: 10, width: 40, height: 20),
+            forType: .highlight,
+            withProperties: nil
+        )
+        annotation.color = NSColor.yellow
+        page.addAnnotation(annotation)
+
+        let doc = PDFDocument()
+        doc.insert(page, at: 0)
+        let state = PDFReaderState()
+        state.document = doc
+        state.pageCount = 1
+        state.refreshAnnotations()
+
+        guard let row = state.annotationRows.first else {
+            XCTFail("annotation row missing")
+            return
+        }
+        state.setAnnotationColor(NSColor.red, for: row)
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.red))
+        XCTAssertTrue(state.canUndo)
+
+        state.undo()
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.yellow))
+        XCTAssertTrue(state.canRedo)
+
+        state.redo()
+        XCTAssertTrue(colorsClose(row.annotation.color, NSColor.red))
+    }
+
+    private func colorsClose(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let a = lhs.usingColorSpace(.sRGB),
+              let b = rhs.usingColorSpace(.sRGB)
+        else { return lhs == rhs }
+        return abs(a.redComponent - b.redComponent) < 0.001
+            && abs(a.greenComponent - b.greenComponent) < 0.001
+            && abs(a.blueComponent - b.blueComponent) < 0.001
+            && abs(a.alphaComponent - b.alphaComponent) < 0.001
     }
 
     func testRecentFilesRecordDedupeCapAndPersist() {

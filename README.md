@@ -24,7 +24,8 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
   Highlights apply automatically once a text selection settles, and the
   color advances to the next rotation color after every highlight.
   **Undo / redo** for annotation changes (⌘Z / ⇧⌘Z).
-  Annotation list inspector with jump-to + delete.
+  Annotation list inspector with jump-to, **recolor existing highlights**,
+  and delete.
 - **Saving** — **Save** (⌘S) writes annotations back into the opened PDF;
   **Save Copy** exports an annotated duplicate.
 - **Recents** — the Open menu keeps an Open Recent list (with Clear Menu);

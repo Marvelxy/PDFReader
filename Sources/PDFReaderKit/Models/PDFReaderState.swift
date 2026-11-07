@@ -36,6 +36,15 @@ public struct PDFAnnotationRow: Identifiable {
     public var contents: String { annotation.contents ?? "" }
 }
 
+/// Annotation currently being recolored by clicking it in the viewer.
+/// `anchor` is in `PDFView` coordinates (bottom-left origin).
+public struct AnnotationColorTarget: Identifiable {
+    public let id = UUID()
+    public let annotation: PDFAnnotation
+    public let pageIndex: Int
+    public let anchor: CGPoint
+}
+
 /// Reading layout options exposed in the toolbar.
 public enum ReadingLayout: String, CaseIterable, Identifiable {
     case singleContinuous
@@ -107,6 +116,8 @@ public final class PDFReaderState: ObservableObject {
 
     @Published public var outlineNodes: [PDFOutlineNode] = []
     @Published public var annotationRows: [PDFAnnotationRow] = []
+    /// Non-nil while the click-to-recolor popover is showing.
+    @Published public var annotationColorTarget: AnnotationColorTarget?
 
     /// Bumped whenever page content changes (annotations added/removed)
     /// so thumbnail caches can invalidate.
@@ -310,6 +321,8 @@ public final class PDFReaderState: ObservableObject {
         case added(pairs: [(page: PDFPage, annotation: PDFAnnotation)])
         /// An annotation we removed (undo re-adds it, redo removes it).
         case removed(page: PDFPage, annotation: PDFAnnotation)
+        /// An annotation whose color we changed (undo restores, redo reapplies).
+        case recolored(annotation: PDFAnnotation, oldColor: NSColor, newColor: NSColor)
     }
 
     private var undoStack: [AnnotationChange] = []
@@ -998,6 +1011,105 @@ public final class PDFReaderState: ObservableObject {
         refreshAnnotations()
     }
 
+    /// Recolors an existing annotation. Used by the Notes inspector so a
+    /// highlight can be edited after it was applied.
+    public func setAnnotationColor(_ color: NSColor, for row: PDFAnnotationRow) {
+        setAnnotationColor(color, for: row.annotation)
+    }
+
+    /// Convenience for palette colors; `.custom` resolves through
+    /// `customHighlightColor`.
+    public func setAnnotationColor(_ color: HighlightColor, for row: PDFAnnotationRow) {
+        setAnnotationColor(color, for: row.annotation)
+    }
+
+    /// Recolors an annotation directly (used by click-to-recolor).
+    public func setAnnotationColor(_ color: NSColor, for annotation: PDFAnnotation) {
+        let oldColor = annotation.color
+        guard !Self.colorsMatch(oldColor, color) else { return }
+        annotation.color = color
+        pdfView?.needsDisplay = true
+        undoStack.append(
+            .recolored(annotation: annotation, oldColor: oldColor, newColor: color)
+        )
+        redoStack.removeAll()
+        refreshAnnotations()
+        statusMessage = "Changed annotation color."
+    }
+
+    /// Convenience for palette colors; `.custom` resolves through
+    /// `customHighlightColor`.
+    public func setAnnotationColor(_ color: HighlightColor, for annotation: PDFAnnotation) {
+        setAnnotationColor(color == .custom ? customHighlightColor : color.nsColor, for: annotation)
+    }
+
+    public func annotationColorMatches(_ annotation: PDFAnnotation, _ color: HighlightColor) -> Bool {
+        Self.colorsMatch(
+            annotation.color,
+            color == .custom ? customHighlightColor : color.nsColor
+        )
+    }
+
+    /// Annotation types that can be recolored by clicking them in the viewer.
+    /// PDFKit reports subtypes as `/Highlight` but `PDFAnnotation.type` as
+    /// `Highlight`, so normalize the leading slash before matching.
+    private static let editableAnnotationTypes: Set<String> = [
+        PDFAnnotationSubtype.highlight.rawValue,
+        PDFAnnotationSubtype.underline.rawValue,
+        PDFAnnotationSubtype.strikeOut.rawValue,
+        PDFAnnotationSubtype.text.rawValue,
+        PDFAnnotationSubtype.freeText.rawValue,
+    ].map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+        .reduce(into: Set<String>()) { $0.insert($1) }
+
+    public static func isEditableAnnotation(_ annotation: PDFAnnotation) -> Bool {
+        let type = annotation.type ?? ""
+        let normalized = type.hasPrefix("/") ? String(type.dropFirst()) : type
+        return editableAnnotationTypes.contains(normalized)
+    }
+
+    /// Handles a click on an annotation in the viewer by opening the color
+    /// editor anchored at that annotation.
+    public func handleAnnotationClick(_ annotation: PDFAnnotation, in view: PDFView) {
+        guard let doc = document,
+              Self.isEditableAnnotation(annotation)
+        else { return }
+        if let current = annotationColorTarget, current.annotation === annotation {
+            return
+        }
+        let page: PDFPage?
+        if let annotationPage = annotation.page {
+            page = annotationPage
+        } else {
+            page = (0 ..< doc.pageCount)
+                .compactMap { doc.page(at: $0) }
+                .first { $0.annotations.contains { $0 === annotation } }
+        }
+        guard let page else { return }
+        let pageIndex = doc.index(for: page)
+        guard pageIndex >= 0, pageIndex < doc.pageCount else { return }
+        let boundsInView = view.convert(annotation.bounds, from: page)
+        annotationColorTarget = AnnotationColorTarget(
+            annotation: annotation,
+            pageIndex: pageIndex,
+            anchor: CGPoint(x: boundsInView.midX, y: boundsInView.midY)
+        )
+    }
+
+    public func dismissAnnotationColorEditor() {
+        annotationColorTarget = nil
+    }
+
+    private static func colorsMatch(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let a = lhs.usingColorSpace(.sRGB),
+              let b = rhs.usingColorSpace(.sRGB)
+        else { return lhs == rhs }
+        return abs(a.redComponent - b.redComponent) < 0.001
+            && abs(a.greenComponent - b.greenComponent) < 0.001
+            && abs(a.blueComponent - b.blueComponent) < 0.001
+            && abs(a.alphaComponent - b.alphaComponent) < 0.001
+    }
+
     public func undo() {
         guard let change = undoStack.popLast() else { return }
         applyInverse(change)
@@ -1022,6 +1134,9 @@ public final class PDFReaderState: ObservableObject {
             }
         case .removed(let page, let annotation):
             page.addAnnotation(annotation)
+        case .recolored(let annotation, let oldColor, _):
+            annotation.color = oldColor
+            pdfView?.needsDisplay = true
         }
     }
 
@@ -1033,6 +1148,9 @@ public final class PDFReaderState: ObservableObject {
             }
         case .removed(let page, let annotation):
             page.removeAnnotation(annotation)
+        case .recolored(let annotation, _, let newColor):
+            annotation.color = newColor
+            pdfView?.needsDisplay = true
         }
     }
 

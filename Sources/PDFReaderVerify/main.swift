@@ -16,6 +16,16 @@ func check(_ condition: Bool, _ label: String, failures: inout Int) {
     }
 }
 
+func colorsClose(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+    guard let a = lhs.usingColorSpace(.sRGB),
+          let b = rhs.usingColorSpace(.sRGB)
+    else { return lhs == rhs }
+    return abs(a.redComponent - b.redComponent) < 0.001
+        && abs(a.greenComponent - b.greenComponent) < 0.001
+        && abs(a.blueComponent - b.blueComponent) < 0.001
+        && abs(a.alphaComponent - b.alphaComponent) < 0.001
+}
+
 @MainActor
 func makeSamplePDF(pages: Int) throws -> URL {
     // Draw real text into a CG PDF context so PDFKit's findString works.
@@ -343,11 +353,63 @@ func run() async -> Int {
             print("FAIL: no hit available for undo checks")
             failures += 1
         }
+        // Recoloring an existing annotation is undoable and persists on save.
+        if let row = state.annotationRows.first {
+            let before = row.annotation.color
+            state.setAnnotationColor(HighlightColor.blue, for: row)
+            check(
+                colorsClose(row.annotation.color, HighlightColor.blue.nsColor),
+                "recolor changes annotation color",
+                failures: &failures
+            )
+            state.undo()
+            check(colorsClose(row.annotation.color, before), "undo restores annotation color", failures: &failures)
+            state.redo()
+            check(
+                colorsClose(row.annotation.color, HighlightColor.blue.nsColor),
+                "redo reapplies annotation color",
+                failures: &failures
+            )
+        } else {
+            print("FAIL: no annotation row to recolor")
+            failures += 1
+        }
+        // Click-to-recolor: hit-testing an editable annotation opens the
+        // editor anchored at it; clicking the same annotation again is
+        // deduped so the popover does not thrash.
+        panel.frame = NSRect(x: 0, y: 0, width: 612, height: 792)
+        panel.autoScales = true
+        panel.layoutSubtreeIfNeeded()
+        if let row = state.annotationRows.first(where: { PDFReaderState.isEditableAnnotation($0.annotation) }) {
+            state.dismissAnnotationColorEditor()
+            state.handleAnnotationClick(row.annotation, in: panel)
+            if let target = state.annotationColorTarget {
+                check(target.annotation === row.annotation, "click sets annotation color target", failures: &failures)
+                check(target.pageIndex == row.pageIndex, "click target page index", failures: &failures)
+                check(target.anchor.x.isFinite && target.anchor.y.isFinite, "click anchor is finite", failures: &failures)
+            } else {
+                print("FAIL: click did not set annotation color target")
+                failures += 1
+            }
+            let targetID = state.annotationColorTarget?.id
+            state.handleAnnotationClick(row.annotation, in: panel)
+            check(state.annotationColorTarget?.id == targetID, "same annotation click is deduped", failures: &failures)
+            state.dismissAnnotationColorEditor()
+            check(state.annotationColorTarget == nil, "dismiss clears annotation color target", failures: &failures)
+        } else {
+            print("FAIL: no editable annotation for click target")
+            failures += 1
+        }
         // Save writes annotations back into the opened file.
         check(state.save(), "save writes back to file", failures: &failures)
         let reopenedFile = PDFReaderState()
         check(reopenedFile.open(url: url), "reopens saved file", failures: &failures)
         check(!reopenedFile.annotationRows.isEmpty, "saved annotations persist on disk", failures: &failures)
+        check(
+            reopenedFile.annotationRows.contains { colorsClose($0.annotation.color, HighlightColor.blue.nsColor) },
+            "saved annotation color persists",
+            failures: &failures
+        )
         check(!PDFReaderState().save(), "save with no document fails gracefully", failures: &failures)
         state.clearSearch()
         check(state.searchHits.isEmpty, "clear search empties hits", failures: &failures)

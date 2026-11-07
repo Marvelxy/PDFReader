@@ -34,9 +34,21 @@ public struct ContentView: View {
                 if state.document == nil {
                     welcomeView
                 } else {
-                    PDFKitView(state: state)
-                        .colorInvertIfActive(state.usesDarkPages)
-                        .background(state.usesDarkPages ? Color.black : state.appTheme.windowBackground)
+                    GeometryReader { geo in
+                        PDFKitView(state: state)
+                            .colorInvertIfActive(state.usesDarkPages)
+                            .background(state.usesDarkPages ? Color.black : state.appTheme.windowBackground)
+                            .popover(
+                                item: Binding(
+                                    get: { state.annotationColorTarget },
+                                    set: { state.annotationColorTarget = $0 }
+                                ),
+                                attachmentAnchor: .point(annotationColorAnchor(in: geo.size)),
+                                arrowEdge: .bottom
+                            ) { target in
+                                AnnotationColorPopover(state: state, target: target)
+                            }
+                    }
                 }
                 statusBar
             }
@@ -198,6 +210,18 @@ public struct ContentView: View {
     }
 
     // MARK: - Subviews
+
+    /// Converts the clicked annotation's PDFView-space anchor (bottom-left
+    /// origin) into a unit point for the popover attachment (top-left origin).
+    private func annotationColorAnchor(in size: CGSize) -> UnitPoint {
+        guard let target = state.annotationColorTarget,
+              size.width > 0, size.height > 0
+        else { return .center }
+        return UnitPoint(
+            x: min(max(target.anchor.x / size.width, 0), 1),
+            y: min(max(1 - target.anchor.y / size.height, 0), 1)
+        )
+    }
 
     /// Explicit draggable divider between sidebar and detail: a neutral
     /// gray strip (11pt hit zone) with resize cursor, drag-to-resize
@@ -1080,5 +1104,54 @@ private struct TabFrameKey: PreferenceKey {
     static var defaultValue: [Int: CGRect] = [:]
     static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
         value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// Click-to-recolor popover shown when a markup annotation is clicked in
+/// the viewer. Presets mirror the Notes inspector; custom colors route
+/// through the same `setAnnotationColor` undo path.
+private struct AnnotationColorPopover: View {
+    @ObservedObject var state: PDFReaderState
+    let target: AnnotationColorTarget
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Highlight color")
+                .font(.headline)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(24), spacing: 8), count: 5),
+                spacing: 8
+            ) {
+                ForEach(HighlightColor.presets) { color in
+                    Circle()
+                        .fill(color.swiftUIColor)
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Circle().strokeBorder(
+                                state.annotationColorMatches(target.annotation, color)
+                                    ? Color.accentColor
+                                    : Color.secondary.opacity(0.35),
+                                lineWidth: state.annotationColorMatches(target.annotation, color) ? 2 : 0.5
+                            )
+                        )
+                        .contentShape(Circle())
+                        .onTapGesture {
+                            state.setAnnotationColor(color, for: target.annotation)
+                        }
+                        .help(color.displayName)
+                }
+            }
+            Divider()
+            ColorPicker(
+                "Custom…",
+                selection: Binding(
+                    get: { Color(nsColor: target.annotation.color) },
+                    set: { state.setAnnotationColor(NSColor($0), for: target.annotation) }
+                ),
+                supportsOpacity: false
+            )
+        }
+        .padding()
+        .frame(minWidth: 210)
     }
 }

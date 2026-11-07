@@ -335,6 +335,15 @@ public struct SidebarView: View {
                             }
                             .buttonStyle(.plain)
                             Spacer()
+                            ColorPicker(
+                                "Annotation color",
+                                selection: annotationCustomColorBinding(for: row),
+                                supportsOpacity: false
+                            )
+                            .labelsHidden()
+                            .fixedSize()
+                            .help("Change annotation color")
+                            .accessibilityLabel("Change annotation color")
                             Button {
                                 state.removeAnnotation(row)
                             } label: {
@@ -348,6 +357,13 @@ public struct SidebarView: View {
                 .listStyle(.sidebar)
             }
         }
+    }
+
+    private func annotationCustomColorBinding(for row: PDFAnnotationRow) -> Binding<Color> {
+        Binding(
+            get: { Color(row.annotation.color) },
+            set: { state.setAnnotationColor(NSColor($0), for: row) }
+        )
     }
 
     private func emptyHint(_ text: String) -> some View {

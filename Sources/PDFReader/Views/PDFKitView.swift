@@ -14,7 +14,7 @@ public struct PDFKitView: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
+        let pdfView = ClickablePDFView()
         pdfView.delegate = context.coordinator
         pdfView.autoScales = state.autoScales
         pdfView.displayMode = state.layout.pdfDisplayMode
@@ -46,7 +46,18 @@ public struct PDFKitView: NSViewRepresentable {
             name: .PDFViewSelectionChanged,
             object: pdfView
         )
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.annotationHit(_:)),
+            name: .PDFViewAnnotationHit,
+            object: pdfView
+        )
+        context.coordinator.installClickHandling(for: pdfView)
         return pdfView
+    }
+
+    public static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
+        coordinator.tearDown()
     }
 
     public func updateNSView(_ pdfView: PDFView, context: Context) {
@@ -65,6 +76,7 @@ public struct PDFKitView: NSViewRepresentable {
         // view back mid-scroll and kept the toolbar/status page numbers
         // from updating.
         state.consumePendingNavigation(in: pdfView)
+        context.coordinator.ensureClickOverlay(in: pdfView)
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -126,6 +138,130 @@ public struct PDFKitView: NSViewRepresentable {
                 }
             }
         }
+
+        @objc func annotationHit(_ note: Notification) {
+            guard let view = note.object as? PDFView,
+                  let annotation = note.userInfo?["PDFAnnotationHit"] as? PDFAnnotation
+            else { return }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self.state?.handleAnnotationClick(annotation, in: view)
+                }
+            } else {
+                Task { @MainActor in
+                    self.state?.handleAnnotationClick(annotation, in: view)
+                }
+            }
+        }
+
+        /// PDFKit's annotation-hit notification is unreliable for text
+        /// markup on recent macOS versions. A transparent overlay captures
+        /// clicks only when they land on an editable annotation, so PDFView's
+        /// own selection/link handling keeps working everywhere else. The
+        /// local mouse-up monitor is a second path in case the overlay is
+        /// displaced by PDFView's internal scroll view.
+        func installClickHandling(for view: PDFView) {
+            let overlay = AnnotationClickOverlay()
+            overlay.pdfView = view
+            overlay.annotationAtPoint = { [weak self] point, view in
+                MainActor.assumeIsolated {
+                    self?.annotation(at: point, in: view)
+                }
+            }
+            overlay.onClick = { [weak self] annotation, view in
+                MainActor.assumeIsolated {
+                    self?.state?.handleAnnotationClick(annotation, in: view)
+                }
+            }
+            overlay.frame = view.bounds
+            overlay.autoresizingMask = [.width, .height]
+            view.addSubview(overlay, positioned: .above, relativeTo: nil)
+            clickOverlay = overlay
+            (view as? ClickablePDFView)?.clickOverlay = overlay
+
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self, weak view] event in
+                guard let self, let view, event.window === view.window else { return event }
+                let point = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(point) else { return event }
+                MainActor.assumeIsolated {
+                    guard let annotation = self.annotation(at: point, in: view) else { return }
+                    self.state?.handleAnnotationClick(annotation, in: view)
+                }
+                return event
+            }
+        }
+
+        func ensureClickOverlay(in view: PDFView) {
+            guard let clickOverlay else {
+                installClickHandling(for: view)
+                return
+            }
+            if clickOverlay.superview !== view || view.subviews.last !== clickOverlay {
+                view.addSubview(clickOverlay, positioned: .above, relativeTo: nil)
+            }
+            if clickOverlay.frame != view.bounds {
+                clickOverlay.frame = view.bounds
+            }
+        }
+
+        func tearDown() {
+            if let clickMonitor {
+                NSEvent.removeMonitor(clickMonitor)
+            }
+            clickMonitor = nil
+            clickOverlay?.removeFromSuperview()
+            clickOverlay = nil
+        }
+
+        private func annotation(at point: NSPoint, in view: PDFView) -> PDFAnnotation? {
+            guard let page = view.page(for: point, nearest: false) else { return nil }
+            let pagePoint = view.convert(point, to: page)
+            let candidates = page.annotations.reversed().filter { $0.bounds.contains(pagePoint) }
+            return candidates.first { PDFReaderState.isEditableAnnotation($0) }
+        }
+
+        private var clickMonitor: Any?
+        private var clickOverlay: AnnotationClickOverlay?
+    }
+}
+
+/// PDFView subclass that routes clicks on editable annotations to the
+/// transparent overlay even when PDFKit's internal scroll view sits above it.
+@MainActor
+private final class ClickablePDFView: PDFView {
+    weak var clickOverlay: AnnotationClickOverlay?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let clickOverlay else { return super.hitTest(point) }
+        let local = convert(point, from: superview)
+        if clickOverlay.annotationAtPoint?(local, self) != nil {
+            return clickOverlay
+        }
+        return super.hitTest(point)
+    }
+}
+
+/// Transparent hit-testing overlay above `PDFView`. Returns itself only when
+/// the point lands on an editable annotation, leaving every other click to
+/// flow through to PDFView.
+@MainActor
+private final class AnnotationClickOverlay: NSView {
+    weak var pdfView: PDFView?
+    var annotationAtPoint: ((NSPoint, PDFView) -> PDFAnnotation?)?
+    var onClick: ((PDFAnnotation, PDFView) -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let pdfView,
+              annotationAtPoint?(point, pdfView) != nil
+        else { return nil }
+        return self
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let pdfView else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let annotation = annotationAtPoint?(point, pdfView) else { return }
+        onClick?(annotation, pdfView)
     }
 }
 
