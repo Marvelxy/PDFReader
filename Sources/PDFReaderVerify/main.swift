@@ -206,6 +206,42 @@ func run() async -> Int {
     check(!store.isBookmarked(fileName: "a.pdf", pageIndex: 2), "bookmark toggle removes", failures: &failures)
     UserDefaults.standard.removeObject(forKey: "com.pdfreader.bookmarks.v1")
 
+    // Library shelves: opened books default to Currently Reading, rows
+    // expose progress, and moving a book persists its section.
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+    do {
+        let library = LibraryStore()
+        let bookA = URL(fileURLWithPath: "/tmp/verify-library-a.pdf")
+        let bookB = URL(fileURLWithPath: "/tmp/verify-library-b.pdf")
+        library.record(url: bookA, progress: 0.25)
+        library.record(url: bookB, progress: 1.0)
+        check(library.books(in: .currentlyReading).count == 2, "library adds opened books", failures: &failures)
+        check(
+            library.books(in: .currentlyReading).first { $0.url == bookA }?.percentage == 25,
+            "library shows reading percentage",
+            failures: &failures
+        )
+        library.move(bookA, to: .wantToRead)
+        library.move(bookB, to: .finished)
+        check(
+            library.books(in: .wantToRead).contains { $0.url == bookA },
+            "library moves book to want to read",
+            failures: &failures
+        )
+        check(
+            library.books(in: .finished).contains { $0.url == bookB },
+            "library moves book to finished",
+            failures: &failures
+        )
+        let reloaded = LibraryStore()
+        check(
+            reloaded.books(in: .wantToRead).first?.percentage == 25,
+            "library persists section and progress",
+            failures: &failures
+        )
+    }
+    UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+
     let bad = PDFReaderState()
     check(!bad.open(url: URL(fileURLWithPath: "/nonexistent/missing.pdf")), "invalid URL fails gracefully", failures: &failures)
 

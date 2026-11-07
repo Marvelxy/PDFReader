@@ -7,9 +7,11 @@ public struct ContentView: View {
     @StateObject private var state = PDFReaderState()
     @StateObject private var bookmarks = BookmarkStore()
     @StateObject private var recents = RecentFilesStore()
+    @StateObject private var library = LibraryStore()
     @State private var sidebarTab: SidebarTab = .outline
     @Environment(\.openWindow) private var openWindow
     @State private var showingSidebar = true
+    @State private var showingLibrary = false
     @State private var sidebarWidth: CGFloat = 280
     @State private var hoveringDivider = false
     @State private var dividerDragAnchor: CGFloat?
@@ -20,18 +22,27 @@ public struct ContentView: View {
 
     public var body: some View {
         HStack(spacing: 0) {
-            if showingSidebar {
+            if showingSidebar && !showingLibrary {
                 SidebarView(state: state, bookmarks: bookmarks, tab: $sidebarTab)
                     .frame(width: sidebarWidth)
                 sidebarDivider
             }
             VStack(spacing: 0) {
                 // Tab bar — shows open PDF tabs like Adobe Reader
-                if !state.tabURLs.isEmpty {
+                if !showingLibrary, !state.tabURLs.isEmpty {
                     TabBar(state: state)
                         .frame(height: 32)
                 }
-                if state.document == nil {
+                if showingLibrary {
+                    LibraryView(
+                        state: state,
+                        library: library,
+                        canReturnToReading: state.document != nil,
+                        onOpen: { url in open(url: url) },
+                        onOpenDocument: openDocument,
+                        onReturnToReading: { showingLibrary = false }
+                    )
+                } else if state.document == nil {
                     welcomeView
                 } else {
                     GeometryReader { geo in
@@ -50,7 +61,9 @@ public struct ContentView: View {
                             }
                     }
                 }
-                statusBar
+                if !showingLibrary {
+                    statusBar
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
@@ -84,6 +97,15 @@ public struct ContentView: View {
                         Label("Sidebar", systemImage: "sidebar.leading")
                     }
                     .help("Toggle sidebar")
+                    .disabled(showingLibrary)
+
+                    Button {
+                        showingLibrary.toggle()
+                    } label: {
+                        Label("Library", systemImage: "books.vertical")
+                    }
+                    .help("Library (⌘L)")
+                    .keyboardShortcut("l", modifiers: .command)
                 }
 
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -198,6 +220,15 @@ public struct ContentView: View {
         .onChange(of: state.highlightColor) { _, _ in
             state.applyToCurrentSelectionIfPresent()
         }
+        .onChange(of: state.fileURL) { _, _ in
+            syncLibrary()
+        }
+        .onChange(of: state.currentPageIndex) { _, _ in
+            syncLibrary()
+        }
+        .onChange(of: state.pageCount) { _, _ in
+            syncLibrary()
+        }
         .preferredColorScheme(state.appTheme.preferredColorScheme)
         .tint(state.appTheme.accent)
         .frame(minWidth: 900, minHeight: 600)
@@ -207,6 +238,7 @@ public struct ContentView: View {
             PrintAction.run = { state.printDocument() }
             // Bring back the tabs and pages that were open at last quit.
             state.restoreSession()
+            syncLibrary()
             // Handy for `swift run` smoke tests: `PDFREADER_SAMPLE=/path/to.pdf swift run`
             if let sample = ProcessInfo.processInfo.environment["PDFREADER_SAMPLE"] {
                 let url = URL(fileURLWithPath: sample)
@@ -647,9 +679,18 @@ public struct ContentView: View {
     private func open(url: URL) -> Bool {
         let ok = state.open(url: url)
         if ok {
+            showingLibrary = false
             recents.record(url)
+            syncLibrary()
         }
         return ok
+    }
+
+    /// Mirrors the active document's reading position into the Library so
+    /// shelf rows show an up-to-date percentage.
+    private func syncLibrary() {
+        guard state.document != nil, let url = state.fileURL else { return }
+        library.record(url: url, progress: state.readingProgress)
     }
 
     private func openRecent(_ item: RecentFile) {

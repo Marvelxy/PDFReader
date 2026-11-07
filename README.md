@@ -26,6 +26,11 @@ Native macOS PDF reader built with SwiftUI + PDFKit as a Swift Package
   **Undo / redo** for annotation changes (⌘Z / ⇧⌘Z).
   Annotation list inspector with jump-to, **recolor existing highlights**,
   and delete.
+- **Library** — a full-page library (⌘L) groups opened books into
+  **Currently reading**, **Want to read** and **Finished**. Every book shows
+  a first-page cover and title plus how much you've read; switch between
+  list and grid views. Move books between shelves with the row menu,
+  context menu, or drag and drop. Shelves, layout, and progress persist.
 - **Saving** — **Save** (⌘S) writes annotations back into the opened PDF;
   **Save Copy** exports an annotated duplicate.
 - **Printing** — **File → Print…** (⌘P) prints through the system print
@@ -142,10 +147,12 @@ Sources/PDFReader/
     PDFReaderState.swift  # document state, search, outline, annotations
     HighlightColor.swift  # switchable markup palette + tools
     BookmarkStore.swift   # persisted per-file bookmarks
+    LibraryStore.swift    # persisted reading shelves + progress
   Views/
     ContentView.swift     # split view, toolbar, status bar
     PDFKitView.swift      # PDFView + PDFThumbnailView bridges
     SidebarView.swift     # pages / contents / search / bookmarks / notes
+    LibraryView.swift     # library page (shelves + progress)
     AboutView.swift       # App menu → About
     SettingsView.swift    # App menu → Settings… (⌘,)
     Services/UpdateChecker.swift  # Help → Check for Updates…

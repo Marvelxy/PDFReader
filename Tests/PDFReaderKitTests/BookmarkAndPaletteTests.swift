@@ -78,6 +78,40 @@ final class BookmarkAndPaletteTests: XCTestCase {
         XCTAssertEqual(Set(modes).count, ReadingLayout.allCases.count)
     }
 
+    func testLibrarySectionsProgressAndPersistence() {
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+        let store = LibraryStore()
+        XCTAssertTrue(store.books.isEmpty)
+
+        let bookA = URL(fileURLWithPath: "/tmp/library-a.pdf")
+        let bookB = URL(fileURLWithPath: "/tmp/library-b.pdf")
+        store.record(url: bookA, progress: 0.25)
+        store.record(url: bookB, progress: 1.0)
+
+        XCTAssertEqual(store.books(in: .currentlyReading).count, 2)
+        XCTAssertEqual(
+            store.books(in: .currentlyReading).first { $0.url == bookA }?.percentage,
+            25
+        )
+
+        store.move(bookA, to: .wantToRead)
+        store.move(bookB, to: .finished)
+        XCTAssertTrue(store.books(in: .wantToRead).contains { $0.url == bookA })
+        XCTAssertTrue(store.books(in: .finished).contains { $0.url == bookB })
+        XCTAssertTrue(store.books(in: .currentlyReading).isEmpty)
+
+        // A fresh instance reads the persisted shelves + progress.
+        let reloaded = LibraryStore()
+        XCTAssertEqual(reloaded.books(in: .wantToRead).first?.percentage, 25)
+        XCTAssertEqual(reloaded.books(in: .finished).first?.percentage, 100)
+
+        // Reading an existing book updates progress without moving shelves.
+        reloaded.record(url: bookA, progress: 0.5)
+        XCTAssertEqual(reloaded.books(in: .wantToRead).first?.percentage, 50)
+
+        UserDefaults.standard.removeObject(forKey: "com.pdfreader.library.v1")
+    }
+
     @MainActor
     func testAnnotationColorCanBeEditedWithUndo() {
         let image = NSImage(size: NSSize(width: 100, height: 100), flipped: false) { rect in
