@@ -255,6 +255,35 @@ public final class PDFReaderState: ObservableObject {
         applyPendingNavigation(in: view)
     }
 
+    /// Captures the live view's visible section so a PDFView recreated after
+    /// visiting the Library can return to it instead of page 0.
+    public func captureCurrentLocation(from view: PDFView) {
+        guard let doc = document,
+              view.document === doc,
+              let url = fileURL,
+              let dest = view.currentDestination,
+              let page = dest.page
+        else { return }
+        let index = doc.index(for: page)
+        guard index >= 0, index < doc.pageCount else { return }
+        savedTabLocations[url.path] = (index, dest.point)
+    }
+
+    /// Seeds pending navigation from the captured section (or current page)
+    /// when a PDFView is created. No-op if a document load already requested
+    /// a page, so opening/switching tabs keeps its saved destination.
+    public func restoreCapturedLocationIfNeeded() {
+        guard document != nil,
+              pendingNavigationPageIndex == nil,
+              pendingNavigationDestination == nil
+        else { return }
+        if let url = fileURL, let loc = savedTabLocations[url.path] {
+            pendingNavigationDestination = loc
+        } else {
+            pendingNavigationPageIndex = currentPageIndex
+        }
+    }
+
     /// Executes the pending navigation (exact section first, page top
     /// otherwise). One `go(to:)` fired around the document commit is not
     /// enough: PDFView's initial layout pass can reset the scroll position
@@ -583,7 +612,7 @@ public final class PDFReaderState: ObservableObject {
         pdfView?.highlightedSelections = nil
         pdfView?.currentSelection = nil
         rebuildOutline()
-        refreshAnnotations()
+        refreshAnnotations(onOpenOf: doc)
         undoStack.removeAll()
         redoStack.removeAll()
         let saved = restoreLastPositionIndex() ?? 0
@@ -703,6 +732,15 @@ public final class PDFReaderState: ObservableObject {
               let page = view.currentPage,
               let index = Optional(doc.index(for: page))
         else { return }
+        // A recreated PDFView reports page 0 before the pending restore
+        // jumps to the target. Ignore those intermediate reports so they
+        // don't overwrite the saved position, but accept the target page
+        // even when it differs from the last synced index.
+        if let pendingTarget = pendingNavigationDestination?.pageIndex ?? pendingNavigationPageIndex,
+           index != pendingTarget
+        {
+            return
+        }
         if index != currentPageIndex {
             currentPageIndex = index
             saveLastPosition()
@@ -859,19 +897,62 @@ public final class PDFReaderState: ObservableObject {
     // MARK: - Annotations
 
     public func refreshAnnotations() {
+        guard let doc = document else {
+            thumbnailRevision &+= 1
+            annotationRows = []
+            return
+        }
+        refreshAnnotations(in: Array(0 ..< doc.pageCount))
+    }
+
+    /// Freshly opened documents are read from disk, so we can ask Core
+    /// Graphics which pages actually have an `/Annots` array before paying
+    /// PDFKit's per-page parse cost. Long, annotation-free PDFs would
+    /// otherwise materialize every page synchronously while opening.
+    /// Only safe for a just-opened document: in-memory edits may not be on
+    /// disk yet, so the regular `refreshAnnotations()` must scan every page.
+    private func refreshAnnotations(onOpenOf doc: PDFDocument) {
+        refreshAnnotations(in: annotationPageCandidates(for: doc))
+    }
+
+    private func refreshAnnotations(in pageIndices: [Int]) {
         thumbnailRevision &+= 1
         guard let doc = document else {
             annotationRows = []
             return
         }
         var rows: [PDFAnnotationRow] = []
-        for i in 0 ..< doc.pageCount {
+        for i in pageIndices {
             guard let page = doc.page(at: i) else { continue }
             for annotation in page.annotations {
                 rows.append(PDFAnnotationRow(annotation: annotation, pageIndex: i))
             }
         }
         annotationRows = rows
+    }
+
+    private func annotationPageCandidates(for doc: PDFDocument) -> [Int] {
+        guard let url = fileURL,
+              let cgDoc = CGPDFDocument(url as CFURL),
+              cgDoc.isUnlocked,
+              cgDoc.numberOfPages == doc.pageCount
+        else {
+            return Array(0 ..< doc.pageCount)
+        }
+        var pages: [Int] = []
+        for i in 1 ... cgDoc.numberOfPages {
+            guard let page = cgDoc.page(at: i), let dictionary = page.dictionary else {
+                return Array(0 ..< doc.pageCount)
+            }
+            var annots: CGPDFArrayRef?
+            if CGPDFDictionaryGetArray(dictionary, "Annots", &annots),
+               let annots,
+               CGPDFArrayGetCount(annots) > 0
+            {
+                pages.append(i - 1)
+            }
+        }
+        return pages
     }
 
     /// Markup modes that apply automatically once a text selection settles.

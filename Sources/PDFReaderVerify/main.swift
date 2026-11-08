@@ -256,6 +256,17 @@ func run() async -> Int {
         check(state.currentPageIndex == 2, "page navigation clamps high", failures: &failures)
         state.goToPage(index: -1, viaView: false)
         check(state.currentPageIndex == 0, "page navigation clamps low", failures: &failures)
+        // A recreated PDFView (e.g. after visiting the Library) must seed
+        // navigation from the current page instead of page 0.
+        state.pendingNavigationPageIndex = nil
+        state.goToPage(index: 2, viaView: false)
+        state.restoreCapturedLocationIfNeeded()
+        check(
+            state.pendingNavigationPageIndex == 2,
+            "recreated view restores current page",
+            failures: &failures
+        )
+        state.pendingNavigationPageIndex = nil
         state.searchQuery = "Hello PDFReader"
         state.runSearch()
         check(!state.searchHits.isEmpty, "search finds generated text", failures: &failures)
@@ -439,11 +450,28 @@ func run() async -> Int {
         // Printing prepares a job when a document is open and nothing otherwise.
         check(state.makePrintOperation() != nil, "print operation is available", failures: &failures)
         check(PDFReaderState().makePrintOperation() == nil, "print without a document yields no operation", failures: &failures)
+        // The open path only materializes pages that have an `/Annots`
+        // entry, so make sure an annotation on a later page survives reopen.
+        if let lastPage = state.document?.page(at: 2) {
+            let note = PDFAnnotation(
+                bounds: NSRect(x: 40, y: 40, width: 24, height: 24),
+                forType: .text,
+                withProperties: nil
+            )
+            note.contents = "Last page note"
+            lastPage.addAnnotation(note)
+            state.refreshAnnotations()
+        }
         // Save writes annotations back into the opened file.
         check(state.save(), "save writes back to file", failures: &failures)
         let reopenedFile = PDFReaderState()
         check(reopenedFile.open(url: url), "reopens saved file", failures: &failures)
         check(!reopenedFile.annotationRows.isEmpty, "saved annotations persist on disk", failures: &failures)
+        check(
+            reopenedFile.annotationRows.contains { $0.pageIndex == 2 },
+            "annotations on later pages persist on disk",
+            failures: &failures
+        )
         check(
             reopenedFile.annotationRows.contains { colorsClose($0.annotation.color, HighlightColor.blue.nsColor) },
             "saved annotation color persists",
