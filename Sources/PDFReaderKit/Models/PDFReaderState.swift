@@ -583,7 +583,7 @@ public final class PDFReaderState: ObservableObject {
         pdfView?.highlightedSelections = nil
         pdfView?.currentSelection = nil
         rebuildOutline()
-        refreshAnnotations()
+        refreshAnnotations(onOpenOf: doc)
         undoStack.removeAll()
         redoStack.removeAll()
         let saved = restoreLastPositionIndex() ?? 0
@@ -859,19 +859,62 @@ public final class PDFReaderState: ObservableObject {
     // MARK: - Annotations
 
     public func refreshAnnotations() {
+        guard let doc = document else {
+            thumbnailRevision &+= 1
+            annotationRows = []
+            return
+        }
+        refreshAnnotations(in: Array(0 ..< doc.pageCount))
+    }
+
+    /// Freshly opened documents are read from disk, so we can ask Core
+    /// Graphics which pages actually have an `/Annots` array before paying
+    /// PDFKit's per-page parse cost. Long, annotation-free PDFs would
+    /// otherwise materialize every page synchronously while opening.
+    /// Only safe for a just-opened document: in-memory edits may not be on
+    /// disk yet, so the regular `refreshAnnotations()` must scan every page.
+    private func refreshAnnotations(onOpenOf doc: PDFDocument) {
+        refreshAnnotations(in: annotationPageCandidates(for: doc))
+    }
+
+    private func refreshAnnotations(in pageIndices: [Int]) {
         thumbnailRevision &+= 1
         guard let doc = document else {
             annotationRows = []
             return
         }
         var rows: [PDFAnnotationRow] = []
-        for i in 0 ..< doc.pageCount {
+        for i in pageIndices {
             guard let page = doc.page(at: i) else { continue }
             for annotation in page.annotations {
                 rows.append(PDFAnnotationRow(annotation: annotation, pageIndex: i))
             }
         }
         annotationRows = rows
+    }
+
+    private func annotationPageCandidates(for doc: PDFDocument) -> [Int] {
+        guard let url = fileURL,
+              let cgDoc = CGPDFDocument(url as CFURL),
+              cgDoc.isUnlocked,
+              cgDoc.numberOfPages == doc.pageCount
+        else {
+            return Array(0 ..< doc.pageCount)
+        }
+        var pages: [Int] = []
+        for i in 1 ... cgDoc.numberOfPages {
+            guard let page = cgDoc.page(at: i), let dictionary = page.dictionary else {
+                return Array(0 ..< doc.pageCount)
+            }
+            var annots: CGPDFArrayRef?
+            if CGPDFDictionaryGetArray(dictionary, "Annots", &annots),
+               let annots,
+               CGPDFArrayGetCount(annots) > 0
+            {
+                pages.append(i - 1)
+            }
+        }
+        return pages
     }
 
     /// Markup modes that apply automatically once a text selection settles.

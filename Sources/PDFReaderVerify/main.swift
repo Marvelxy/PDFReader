@@ -439,11 +439,28 @@ func run() async -> Int {
         // Printing prepares a job when a document is open and nothing otherwise.
         check(state.makePrintOperation() != nil, "print operation is available", failures: &failures)
         check(PDFReaderState().makePrintOperation() == nil, "print without a document yields no operation", failures: &failures)
+        // The open path only materializes pages that have an `/Annots`
+        // entry, so make sure an annotation on a later page survives reopen.
+        if let lastPage = state.document?.page(at: 2) {
+            let note = PDFAnnotation(
+                bounds: NSRect(x: 40, y: 40, width: 24, height: 24),
+                forType: .text,
+                withProperties: nil
+            )
+            note.contents = "Last page note"
+            lastPage.addAnnotation(note)
+            state.refreshAnnotations()
+        }
         // Save writes annotations back into the opened file.
         check(state.save(), "save writes back to file", failures: &failures)
         let reopenedFile = PDFReaderState()
         check(reopenedFile.open(url: url), "reopens saved file", failures: &failures)
         check(!reopenedFile.annotationRows.isEmpty, "saved annotations persist on disk", failures: &failures)
+        check(
+            reopenedFile.annotationRows.contains { $0.pageIndex == 2 },
+            "annotations on later pages persist on disk",
+            failures: &failures
+        )
         check(
             reopenedFile.annotationRows.contains { colorsClose($0.annotation.color, HighlightColor.blue.nsColor) },
             "saved annotation color persists",
