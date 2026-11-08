@@ -255,6 +255,35 @@ public final class PDFReaderState: ObservableObject {
         applyPendingNavigation(in: view)
     }
 
+    /// Captures the live view's visible section so a PDFView recreated after
+    /// visiting the Library can return to it instead of page 0.
+    public func captureCurrentLocation(from view: PDFView) {
+        guard let doc = document,
+              view.document === doc,
+              let url = fileURL,
+              let dest = view.currentDestination,
+              let page = dest.page
+        else { return }
+        let index = doc.index(for: page)
+        guard index >= 0, index < doc.pageCount else { return }
+        savedTabLocations[url.path] = (index, dest.point)
+    }
+
+    /// Seeds pending navigation from the captured section (or current page)
+    /// when a PDFView is created. No-op if a document load already requested
+    /// a page, so opening/switching tabs keeps its saved destination.
+    public func restoreCapturedLocationIfNeeded() {
+        guard document != nil,
+              pendingNavigationPageIndex == nil,
+              pendingNavigationDestination == nil
+        else { return }
+        if let url = fileURL, let loc = savedTabLocations[url.path] {
+            pendingNavigationDestination = loc
+        } else {
+            pendingNavigationPageIndex = currentPageIndex
+        }
+    }
+
     /// Executes the pending navigation (exact section first, page top
     /// otherwise). One `go(to:)` fired around the document commit is not
     /// enough: PDFView's initial layout pass can reset the scroll position
@@ -703,6 +732,15 @@ public final class PDFReaderState: ObservableObject {
               let page = view.currentPage,
               let index = Optional(doc.index(for: page))
         else { return }
+        // A recreated PDFView reports page 0 before the pending restore
+        // jumps to the target. Ignore those intermediate reports so they
+        // don't overwrite the saved position, but accept the target page
+        // even when it differs from the last synced index.
+        if let pendingTarget = pendingNavigationDestination?.pageIndex ?? pendingNavigationPageIndex,
+           index != pendingTarget
+        {
+            return
+        }
         if index != currentPageIndex {
             currentPageIndex = index
             saveLastPosition()

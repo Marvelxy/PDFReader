@@ -26,6 +26,9 @@ public struct PDFKitView: NSViewRepresentable {
         // `.preferredColorScheme(.dark)` and would invert back to light).
         pdfView.backgroundColor = state.usesDarkPages ? .white : .windowBackgroundColor
         pdfView.document = state.document
+        // A recreated view (e.g. after visiting the Library) starts at page
+        // 0; seed the captured section so updateNSView restores it.
+        state.restoreCapturedLocationIfNeeded()
         state.pdfView = pdfView
 
         NotificationCenter.default.addObserver(
@@ -57,6 +60,7 @@ public struct PDFKitView: NSViewRepresentable {
     }
 
     public static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
+        coordinator.captureLocation(from: pdfView)
         coordinator.tearDown()
     }
 
@@ -202,6 +206,10 @@ public struct PDFKitView: NSViewRepresentable {
             if clickOverlay.frame != view.bounds {
                 clickOverlay.frame = view.bounds
             }
+        }
+
+        func captureLocation(from view: PDFView) {
+            state?.captureCurrentLocation(from: view)
         }
 
         func tearDown() {

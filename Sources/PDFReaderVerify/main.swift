@@ -256,6 +256,17 @@ func run() async -> Int {
         check(state.currentPageIndex == 2, "page navigation clamps high", failures: &failures)
         state.goToPage(index: -1, viaView: false)
         check(state.currentPageIndex == 0, "page navigation clamps low", failures: &failures)
+        // A recreated PDFView (e.g. after visiting the Library) must seed
+        // navigation from the current page instead of page 0.
+        state.pendingNavigationPageIndex = nil
+        state.goToPage(index: 2, viaView: false)
+        state.restoreCapturedLocationIfNeeded()
+        check(
+            state.pendingNavigationPageIndex == 2,
+            "recreated view restores current page",
+            failures: &failures
+        )
+        state.pendingNavigationPageIndex = nil
         state.searchQuery = "Hello PDFReader"
         state.runSearch()
         check(!state.searchHits.isEmpty, "search finds generated text", failures: &failures)
